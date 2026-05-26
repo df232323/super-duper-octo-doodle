@@ -9,6 +9,9 @@ from telethon.tl.types import DocumentAttributeFilename
 from telethon.errors import PhoneNumberInvalidError, PhoneCodeInvalidError
 from telethon.tl.custom import Button
 
+# Добавляем веб-сервер для Render (чтобы порт был открыт)
+from aiohttp import web
+
 # ==========================================
 # 🔑 НАСТРОЙКИ
 # ==========================================
@@ -17,9 +20,7 @@ API_ID = os.getenv('API_ID')
 API_HASH = os.getenv('API_HASH')
 
 if not BOT_TOKEN or not API_ID or not API_HASH:
-    print("❌ ОШИБКА: Не установлены переменные окружения!")
-    print("Добавь в Render Environment Variables:")
-    print("  BOT_TOKEN, API_ID, API_HASH")
+    print("❌ ОШИБКА: Нет переменных окружения!")
     exit(1)
 
 API_ID = int(API_ID)
@@ -61,7 +62,7 @@ def get_material_kb():
 def get_after_broadcast_kb():
     return [
         [Button.text('🔁 ПОВТОРИТЬ')],
-        [Button.text('📥 НОВЫЙ МАТЕРИАЛ')],
+        [Button.text(' НОВЫЙ МАТЕРИАЛ')],
         [Button.text('➕ ДОБАВИТЬ АККАУНТ')],
         [Button.text('🏠 ГЛАВНОЕ МЕНЮ')]
     ]
@@ -119,24 +120,41 @@ def clear_user_sessions(user_id):
         accounts[user_id] = {}
 
 # ==========================================
+#  ВЕБ-СЕРВЕР ДЛЯ RENDER
+# ==========================================
+async def start_web_server():
+    """Запускает простой сайт, чтобы Render не убивал бота"""
+    app = web.Application()
+    
+    async def handle(request):
+        return web.Response(text="🟢 DUCK BOT is alive!")
+
+    app.router.add_get('/', handle)
+    app.router.add_get('/health', handle) # Для UptimeRobot
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # Render дает порт в переменной PORT
+    port = int(os.environ.get('PORT', 10000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"🌐 Web server running on port {port}")
+
+# ==========================================
 # 🏁 ГЛАВНАЯ ФУНКЦИЯ
 # ==========================================
 async def main():
-    # Обработка "пробуждения" для Render
-    if '--health' in sys.argv:
-        print("✅ Bot is alive")
-        return
-    
+    # 1. Сначала запускаем веб-сервер
+    await start_web_server()
+
+    # 2. Потом запускаем бота
     bot = TelegramClient('bot_session', API_ID, API_HASH)
     await bot.start(bot_token=BOT_TOKEN)
     bot_me = await bot.get_me()
     bot_id = bot_me.id
-    print("🟢 DUCK BOT запущен на Render!")
     
-    # Обработчик /ping для uptime
-    @bot.on(events.NewMessage(pattern='/ping'))
-    async def ping(event):
-        await event.respond('✅ Pong! Бот работает.')
+    print("🟢 DUCK BOT запущен на Render!")
     
     @bot.on(events.NewMessage(pattern='/start'))
     async def start(event):
@@ -150,15 +168,17 @@ async def main():
         if event.sender_id == bot_id: return
         user_id = event.sender_id
         if not get_user_accounts(user_id):
-            await event.respond("❌ **Нет аккаунтов!**"); return
+            await event.respond(" **Нет аккаунтов!**"); return
         if user_id not in current_materials:
             await event.respond("❌ **Нет материала!**"); return
+        
         total = 0
         for acc in get_user_accounts(user_id).values():
             try:
                 c = await acc['client'](GetContactsRequest(0))
                 total += len([u for u in c.users if u.mutual_contact and not u.bot])
             except: pass
+        
         await event.respond(f"🚀 **ЗАПУСК**\n👥 Аккаунтов: {len(get_user_accounts(user_id))}\n👥 Контактов: {total}\n\n▶️ Начать?", buttons=[[Button.text('✅ ДА')],[Button.text('❌ НЕТ')]])
         current_step[user_id] = 'confirm'
 
@@ -173,9 +193,9 @@ async def main():
     async def acc_menu(event):
         if event.sender_id == bot_id: return
         current_step[event.sender_id] = 'login'
-        await event.respond("🔐 **Вход**\n📱 Номер | 💾 Session | 🔑 String", buttons=[[Button.text('📱 НОМЕР')],[Button.text('💾 SESSION')],[Button.text('🔑 STRING')],[Button.text('🔙 НАЗАД')]])
+        await event.respond("🔐 **Вход**\n📱 Номер | 💾 Session | 🔑 String", buttons=[[Button.text(' НОМЕР')],[Button.text('💾 SESSION')],[Button.text('🔑 STRING')],[Button.text('🔙 НАЗАД')]])
 
-    @bot.on(events.NewMessage(pattern='➕ ДОБАВИТЬ АККАУНТ'))
+    @bot.on(events.NewMessage(pattern=' ДОБАВИТЬ АККАУНТ'))
     async def add_acc(event):
         if event.sender_id == bot_id: return
         current_step[event.sender_id] = 'login'
@@ -211,24 +231,24 @@ async def main():
         current_step[event.sender_id] = 'wait_mat'
         await event.respond("📥 Отправьте файл или текст", buttons=CANCEL_KB)
 
-    @bot.on(events.NewMessage(pattern='📈 СТАТИСТИКА'))
+    @bot.on(events.NewMessage(pattern=' СТАТИСТИКА'))
     async def stats(event):
         if event.sender_id == bot_id: return
         uid = event.sender_id
         s = get_stats(uid)
-        await event.respond(f"📈 **СТАТ**\n👥 Аккаунтов: {len(get_user_accounts(uid))}\n✉️ Всего: {s['total']}\n📅 Сегодня: {s['today']}\n📅 Месяц: {s['month']}", buttons=get_main_kb())
+        await event.respond(f" **СТАТ**\n👥 Аккаунтов: {len(get_user_accounts(uid))}\n✉️ Всего: {s['total']}\n📅 Сегодня: {s['today']}\n📅 Месяц: {s['month']}", buttons=get_main_kb())
 
     @bot.on(events.NewMessage(pattern='🔙 НАЗАД'))
     async def back(event):
         if event.sender_id == bot_id: return
         current_step[event.sender_id] = 'menu'
-        await event.respond("🔙 Назад", buttons=get_main_kb())
+        await event.respond(" Назад", buttons=get_main_kb())
 
     @bot.on(events.NewMessage(pattern='🏠 ГЛАВНОЕ МЕНЮ'))
     async def home(event):
         if event.sender_id == bot_id: return
         current_step[event.sender_id] = 'menu'
-        await event.respond("🏠 Меню", buttons=get_main_kb())
+        await event.respond(" Меню", buttons=get_main_kb())
 
     @bot.on(events.NewMessage(pattern='❌ ОТМЕНА'))
     async def cancel(event):
@@ -242,7 +262,7 @@ async def main():
         uid = event.sender_id
         txt = event.message.text
         step = current_step.get(uid, 'menu')
-        btns = ['🚀 ЗАПУСТИТЬ РАССЫЛКУ','👥 АККАУНТЫ','📦 МАТЕРИАЛ','📈 СТАТИСТИКА','➕ ДОБАВИТЬ АККАУНТ','📥 ЗАГРУЗИТЬ МАТЕРИАЛ','🔁 ПОВТОРИТЬ','📥 НОВЫЙ МАТЕРИАЛ','📱 НОМЕР','💾 SESSION','🔑 STRING','✅ ДА','❌ НЕТ','❌ ОТМЕНА','🔙 НАЗАД','🏠 ГЛАВНОЕ МЕНЮ']
+        btns = ['🚀 ЗАПУСТИТЬ РАССЫЛКУ','👥 АККАУНТЫ','📦 МАТЕРИАЛ','📈 СТАТИСТИКА','➕ ДОБАВИТЬ АККАУНТ','📥 ЗАГРУЗИТЬ МАТЕРИАЛ','🔁 ПОВТОРИТЬ','📥 НОВЫЙ МАТЕРИАЛ','📱 НОМЕР','💾 SESSION','🔑 STRING','✅ ДА','❌ НЕТ','❌ ОТМЕНА','🔙 НАЗАД',' ГЛАВНОЕ МЕНЮ']
         if txt and (txt.startswith('/') or txt in btns): return
         
         if step == 'wait_phone' and txt and txt.startswith('+') and txt[1:].isdigit():
@@ -334,12 +354,12 @@ async def main():
                 sent += 1
             except: failed += 1
             if sent % 10 == 0 and sent != last_p:
-                await msg.edit(f"🚀 ✅ {sent}/{total}\n❌ {failed}"); last_p = sent
+                await msg.edit(f"🚀 ✅ {sent}/{total}\n {failed}"); last_p = sent
             await asyncio.sleep(2)
         clear_user_sessions(uid)
         update_stats(uid, sent)
         s = get_stats(uid)
-        await event.respond(f"✅ Готово!\n📤 {sent}\n❌ {failed}\n📊 Всего: {s['total']}", buttons=get_after_broadcast_kb())
+        await event.respond(f"✅ Готово!\n📤 {sent}\n❌ {failed}\n Всего: {s['total']}", buttons=get_after_broadcast_kb())
         current_step[uid] = 'after'
 
     await bot.run_until_disconnected()
