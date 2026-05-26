@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.functions.contacts import GetContactsRequest
-from telethon.tl.types import DocumentAttributeFilename  # ВАЖНО!
+from telethon.tl.types import DocumentAttributeFilename
 from telethon.tl.custom import Button
 from aiohttp import web
 
@@ -31,7 +31,7 @@ for d in ['sessions', 'materials']:
     os.makedirs(d, exist_ok=True)
 
 # ==========================================
-# 🎨 ТОЛЬКО INLINE КНОПКИ
+# 🎨 КНОПКИ
 # ==========================================
 def main_kb():
     return [
@@ -172,13 +172,71 @@ async def main():
                     await e.respond(f"❌ Ошибка: {err}", buttons=Button.clear())
             return
 
-        # 💾 SESSION
+        # 💾 SESSION ФАЙЛ — ИСПРАВЛЕНО!
         if step == 'sess_file':
             if e.file and e.file.name.endswith('.session'):
-                msg = await e.respond("⏳ Загрузка...", buttons=Button.clear())
+                msg = await e.respond("⏳ **Загрузка session файла...**\n*Пожалуйста, подождите*", buttons=Button.clear())
                 try:
-                    path = await e.download_media(file=f"sessions/acc_{uid}.session")
-                    client = TelegramClient(path.replace('.session',''), API_ID, API_HASH)
+                    # 1. Скачиваем файл
+                    await msg.edit("⏳ **Скачивание файла...**")
+                    session_path = await e.download_media(
+                        file=f"sessions/acc_{uid}_{len(accounts.get(uid, {})) + 1}.session"
+                    )
+                    
+                    # 2. Подключаемся
+                    await msg.edit("🔄 **Подключение к аккаунту...**")
+                    session_name = session_path.replace('.session', '')
+                    client = TelegramClient(session_name, API_ID, API_HASH)
+                    await client.connect()
+                    
+                    # 3. Получаем информацию
+                    await msg.edit("📱 **Получение информации об аккаунте...**")
+                    me_acc = await client.get_me()
+                    
+                    # 4. Считаем контакты
+                    try:
+                        contacts = await client(GetContactsRequest(0))
+                        total = len([u for u in contacts.users if not u.bot])
+                        mutual = len([u for u in contacts.users if u.mutual_contact and not u.bot])
+                    except:
+                        total = 0
+                        mutual = 0
+                    
+                    # 5. Сохраняем аккаунт
+                    acc_id = f'a{len(accounts.get(uid, {})) + 1}'
+                    accounts.setdefault(uid, {})[acc_id] = {
+                        'client': client, 
+                        'phone': me_acc.phone, 
+                        'name': me_acc.first_name or 'Без имени',
+                        'username': me_acc.username or 'нет', 
+                        'total': total, 
+                        'mutual': mutual
+                    }
+                    
+                    current_step[uid] = 'menu'
+                    
+                    # 6. Показываем результат
+                    await msg.edit(
+                        format_acc_info(accounts[uid][acc_id]), 
+                        buttons=acc_info_kb()
+                    )
+                    
+                except Exception as err:
+                    print(f"❌ Ошибка загрузки session: {err}")
+                    await msg.edit(
+                        f"**❌ Ошибка при загрузке session!**\n\n"
+                        f"**Ошибка:** {str(err)[:200]}\n\n"
+                        f"Убедитесь, что файл .session действителен.",
+                        buttons=Button.clear()
+                    )
+            return
+
+        # 🔑 STRING
+        if step == 'sess_str':
+            if txt and txt.startswith('1') and len(txt) > 100:
+                msg = await e.respond("🔄 **Подключение...**", buttons=Button.clear())
+                try:
+                    client = TelegramClient(StringSession(txt), API_ID, API_HASH)
                     await client.connect()
                     me_acc = await client.get_me()
                     contacts = await client(GetContactsRequest(0))
@@ -191,37 +249,20 @@ async def main():
                     current_step[uid] = 'menu'
                     await msg.edit(format_acc_info(accounts[uid][acc_id]), buttons=acc_info_kb())
                 except Exception as err:
-                    await msg.edit(f"❌ {err}", buttons=Button.clear())
+                    await msg.edit(f"❌ Ошибка: {err}", buttons=Button.clear())
             return
 
-        # 🔑 STRING
-        if step == 'sess_str':
-            if txt and txt.startswith('1') and len(txt) > 100:
-                client = TelegramClient(StringSession(txt), API_ID, API_HASH)
-                await client.connect()
-                me_acc = await client.get_me()
-                contacts = await client(GetContactsRequest(0))
-                total = len([u for u in contacts.users if not u.bot])
-                mutual = len([u for u in contacts.users if u.mutual_contact and not u.bot])
-                acc_id = f'a{len(accounts.get(uid, {})) + 1}'
-                accounts.setdefault(uid, {})[acc_id] = {
-                    'client': client, 'phone': me_acc.phone, 'name': me_acc.first_name,
-                    'username': me_acc.username or 'нет', 'total': total, 'mutual': mutual}
-                current_step[uid] = 'menu'
-                await e.respond(format_acc_info(accounts[uid][acc_id]), buttons=acc_info_kb())
-            return
-
-        # 📥 МАТЕРИАЛ — СОХРАНЯЕМ ОРИГИНАЛЬНОЕ ИМЯ!
+        # 📥 МАТЕРИАЛ
         if step == 'upload_mat':
             if e.file:
-                original_name = e.file.name  # Сохраняем оригинальное имя!
+                original_name = e.file.name
                 path = await e.download_media(file=f"materials/mat_{uid}_{original_name}")
                 cap = txt or ''
                 mat = {
                     'file': path, 
                     'caption': cap, 
-                    'name': original_name,  # ОРИГИНАЛЬНОЕ ИМЯ!
-                    'original_name': original_name  # Дублируем для надёжности
+                    'name': original_name,
+                    'original_name': original_name
                 }
                 material_history.setdefault(uid, []).append(mat)
                 current_materials[uid] = mat
@@ -288,7 +329,7 @@ async def main():
             await e.edit("**❌ Отмена**", buttons=main_kb())
         await e.answer()
 
-    # 🚀 РАССЫЛКА — ОТПРАВЛЯЕМ С ОРИГИНАЛЬНЫМ ИМЕНЕМ!
+    # 🚀 РАССЫЛКА
     async def do_broadcast(bot, uid, e):
         accs = accounts.get(uid, {})
         mat = current_materials.get(uid)
@@ -313,14 +354,12 @@ async def main():
         for acc, user in targets:
             try:
                 if mat['file']:
-                    # Получаем оригинальное имя файла
                     original_name = mat.get('original_name', mat.get('name', 'file'))
-                    
                     await acc['client'].send_file(
                         user.id, 
                         mat['file'], 
                         caption=mat['caption'],
-                        attributes=[DocumentAttributeFilename(file_name=original_name)]  # ОРИГИНАЛЬНОЕ ИМЯ!
+                        attributes=[DocumentAttributeFilename(file_name=original_name)]
                     )
                 else:
                     await acc['client'].send_message(user.id, mat['caption'])
