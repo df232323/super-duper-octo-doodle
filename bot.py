@@ -1,5 +1,6 @@
 import asyncio
 import os
+import traceback
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -91,23 +92,20 @@ def update_stats(uid, count):
     broadcast_stats[uid]['daily'][today] = broadcast_stats[uid]['daily'].get(today, 0) + count
 
 def clear_user_data(uid):
-    """Полная очистка данных пользователя"""
-    print(f"🧹 Очистка данных для пользователя {uid}")
-    # Отключаем все сессии
+    """Очистка данных пользователя"""
+    print(f"🧹 [USER {uid}] Очистка данных...")
     if uid in accounts:
-        for acc_id, acc_data in accounts[uid].items():
+        for acc_id, acc_data in list(accounts[uid].items()):
             try:
                 if acc_data.get('client'):
                     asyncio.create_task(acc_data['client'].disconnect())
-                    print(f"  ❌ Отключен аккаунт {acc_id}")
+                    print(f"  ❌ [USER {uid}] Отключен аккаунт {acc_id}")
             except Exception as e:
-                print(f"  ⚠️ Ошибка отключения {acc_id}: {e}")
-    # Очищаем всё
+                print(f"  ⚠️ [USER {uid}] Ошибка отключения {acc_id}: {e}")
     accounts[uid] = {}
     current_step[uid] = 'menu'
     current_materials.pop(uid, None)
-    # material_history и broadcast_stats оставляем для статистики
-    print(f"  ✅ Данные очищены")
+    print(f"  ✅ [USER {uid}] Данные очищены")
 
 # ==========================================
 # 🌐 ВЕБ-СЕРВЕР
@@ -127,17 +125,13 @@ async def main():
     bot = TelegramClient('bot_session', API_ID, API_HASH)
     await bot.start(bot_token=BOT_TOKEN)
     me = await bot.get_me()
-    print(f"✅ {me.first_name} запущен!")
-    print(f"👤 Bot ID: {me.id}")
+    print(f"✅ {me.first_name} запущен! (ID: {me.id})")
 
     @bot.on(events.NewMessage(pattern=r'/start'))
     async def start_cmd(e):
         uid = e.sender_id
-        print(f"📩 /start от пользователя {uid}")
-        
-        # СБРОС ВСЕХ ДАННЫХ ПОЛЬЗОВАТЕЛЯ
+        print(f"📩 [USER {uid}] Команда /start")
         clear_user_data(uid)
-        
         authorized_users[uid] = False
         current_step[uid] = 'pin'
         await e.respond("**🔐 DUCK SPAM BOT**\n\nВведите PIN-код (4 цифры):", buttons=Button.clear())
@@ -150,7 +144,7 @@ async def main():
         if (txt and txt.startswith('/')) or e.sender_id == me.id:
             return
 
-        print(f"📨 Сообщение от {uid}: step={step}, текст={txt[:30] if txt else 'file'}")
+        print(f"📨 [USER {uid}] Шаг: {step}, Текст: {txt[:30] if txt else 'file'}")
 
         # 🔐 PIN
         if step == 'pin':
@@ -158,7 +152,7 @@ async def main():
                 if txt == CORRECT_PIN:
                     authorized_users[uid] = True
                     current_step[uid] = 'menu'
-                    print(f"✅ Пользователь {uid} авторизован")
+                    print(f"✅ [USER {uid}] Успешная авторизация")
                     await e.respond("**✅ Доступ разрешён**\n\n**🦆 DUCK SPAM BOT**\n*Панель управления*", buttons=main_kb())
                 else:
                     await e.respond("❌ Неверный PIN", buttons=Button.clear())
@@ -196,42 +190,71 @@ async def main():
                                  'username': me_acc.username or 'нет', 'total': total, 'mutual': mutual})
                     current_step[uid] = 'menu'
                     await e.respond(format_acc_info(last), buttons=acc_info_kb())
-                    print(f"✅ Аккаунт добавлен: {me_acc.first_name} ({me_acc.phone})")
+                    print(f"✅ [USER {uid}] Аккаунт добавлен: {me_acc.first_name}")
                 except Exception as err:
+                    print(f"❌ [USER {uid}] Ошибка входа по коду: {err}")
+                    traceback.print_exc()
                     await e.respond(f"❌ Ошибка: {err}", buttons=Button.clear())
             return
 
-        # 💾 SESSION ФАЙЛ — ПОЛНЫЙ СБРОС ПЕРЕД ЗАГРУЗКОЙ!
+        # 💾 SESSION ФАЙЛ — ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ
         if step == 'sess_file':
             if e.file and e.file.name.endswith('.session'):
-                # 🔥 ВАЖНО: Сначала очищаем ВСЕ старые сессии!
-                print(f"🗑️ Очистка старых сессий перед загрузкой новой для {uid}")
+                print(f"💾 [USER {uid}] Получен session файл: {e.file.name}")
                 clear_user_data(uid)
                 
                 msg = await e.respond("⏳ **Загрузка session файла...**\n*Старые сессии удалены*", buttons=Button.clear())
+                
                 try:
-                    await msg.edit("⏳ **Скачивание файла...**")
+                    # Шаг 1: Скачивание
+                    print(f"⏳ [USER {uid}] Шаг 1: Скачивание файла...")
+                    await msg.edit("⏳ **Шаг 1/4: Скачивание файла...**")
                     session_path = await e.download_media(
-                        file=f"sessions/acc_{uid}_new.session"  # Фиксированное имя для одного аккаунта
+                        file=f"sessions/acc_{uid}_new.session"
                     )
+                    print(f"✅ [USER {uid}] Файл скачан: {session_path}")
                     
-                    await msg.edit("🔄 **Подключение к аккаунту...**")
+                    # Шаг 2: Подключение
+                    print(f"🔄 [USER {uid}] Шаг 2: Подключение к сессии...")
+                    await msg.edit("🔄 **Шаг 2/4: Подключение к сессии...**")
                     session_name = session_path.replace('.session', '')
                     client = TelegramClient(session_name, API_ID, API_HASH)
-                    await client.connect()
-                    
-                    await msg.edit("📱 **Получение информации...**")
-                    me_acc = await client.get_me()
                     
                     try:
-                        contacts = await client(GetContactsRequest(0))
+                        await asyncio.wait_for(client.connect(), timeout=10.0)
+                        print(f"✅ [USER {uid}] Сессия подключена")
+                    except asyncio.TimeoutError:
+                        raise Exception("⏱️ Превышено время подключения. Сессия может быть недействительна.")
+                    except Exception as conn_err:
+                        raise Exception(f"❌ Ошибка подключения: {conn_err}")
+                    
+                    # Шаг 3: Получение информации
+                    print(f"📱 [USER {uid}] Шаг 3: Получение информации об аккаунте...")
+                    await msg.edit("📱 **Шаг 3/4: Получение информации...**")
+                    try:
+                        me_acc = await asyncio.wait_for(client.get_me(), timeout=10.0)
+                        print(f"✅ [USER {uid}] Информация получена: {me_acc.first_name}")
+                    except asyncio.TimeoutError:
+                        raise Exception("⏱️ Превышено время получения информации.")
+                    
+                    # Шаг 4: Подсчёт контактов
+                    print(f"📊 [USER {uid}] Шаг 4: Подсчёт контактов...")
+                    await msg.edit("📊 **Шаг 4/4: Подсчёт контактов...**")
+                    try:
+                        contacts = await asyncio.wait_for(client(GetContactsRequest(0)), timeout=15.0)
                         total = len([u for u in contacts.users if not u.bot])
                         mutual = len([u for u in contacts.users if u.mutual_contact and not u.bot])
-                    except:
+                        print(f"✅ [USER {uid}] Контактов: {total}, Взаимных: {mutual}")
+                    except asyncio.TimeoutError:
                         total = 0
                         mutual = 0
+                        print(f"⚠️ [USER {uid}] Таймаут при подсчёте контактов")
+                    except Exception as e:
+                        total = 0
+                        mutual = 0
+                        print(f"⚠️ [USER {uid}] Ошибка подсчёта контактов: {e}")
                     
-                    # Сохраняем НОВЫЙ аккаунт
+                    # Сохранение аккаунта
                     accounts.setdefault(uid, {})['active'] = {
                         'client': client, 
                         'phone': me_acc.phone, 
@@ -242,7 +265,7 @@ async def main():
                     }
                     
                     current_step[uid] = 'menu'
-                    print(f"✅ Session загружена: {me_acc.first_name} ({me_acc.phone})")
+                    print(f"✅ [USER {uid}] Session успешно загружена!")
                     
                     await msg.edit(
                         format_acc_info(accounts[uid]['active']), 
@@ -250,13 +273,17 @@ async def main():
                     )
                     
                 except Exception as err:
-                    print(f"❌ Ошибка загрузки session: {err}")
-                    import traceback
-                    traceback.print_exc()
+                    error_trace = traceback.format_exc()
+                    print(f"❌ [USER {uid}] КРИТИЧЕСКАЯ ОШИБКА:\n{error_trace}")
+                    error_msg = str(err)[:300]
                     await msg.edit(
-                        f"**❌ Ошибка при загрузке session!**\n\n"
-                        f"**Ошибка:** {str(err)[:200]}\n\n"
-                        f"Убедитесь, что файл .session действителен.",
+                        f"**❌ ОШИБКА ЗАГРУЗКИ SESSION!**\n\n"
+                        f"**Детали:**\n`{error_msg}`\n\n"
+                        f"Возможные причины:\n"
+                        f"• Сессия устарела или недействительна\n"
+                        f"• Неверный API_ID или API_HASH\n"
+                        f"• Проблемы с сетью\n\n"
+                        f"Попробуйте другую сессию.",
                         buttons=Button.clear()
                     )
             return
@@ -264,7 +291,7 @@ async def main():
         # 🔑 STRING
         if step == 'sess_str':
             if txt and txt.startswith('1') and len(txt) > 100:
-                # 🔥 Тоже очищаем перед загрузкой!
+                print(f"🔑 [USER {uid}] Получен session string")
                 clear_user_data(uid)
                 
                 msg = await e.respond("🔄 **Подключение...**", buttons=Button.clear())
@@ -281,8 +308,9 @@ async def main():
                         'username': me_acc.username or 'нет', 'total': total, 'mutual': mutual}
                     current_step[uid] = 'menu'
                     await msg.edit(format_acc_info(accounts[uid]['active']), buttons=acc_info_kb())
-                    print(f"✅ String загружен: {me_acc.first_name}")
+                    print(f"✅ [USER {uid}] String загружен: {me_acc.first_name}")
                 except Exception as err:
+                    print(f"❌ [USER {uid}] Ошибка string: {err}")
                     await msg.edit(f"❌ Ошибка: {err}", buttons=Button.clear())
             return
 
@@ -317,7 +345,7 @@ async def main():
             return await e.answer("🔐 Введите /start", alert=True)
         
         d = e.data.decode()
-        print(f"🔘 Callback от {uid}: {d}")
+        print(f"🔘 [USER {uid}] Callback: {d}")
 
         if d == 'main':
             current_step[uid] = 'menu'
