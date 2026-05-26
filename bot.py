@@ -14,7 +14,7 @@ from aiohttp import web
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 API_ID = os.getenv('API_ID')
 API_HASH = os.getenv('API_HASH')
-CORRECT_PIN = "6611"  # PIN код для доступа
+CORRECT_PIN = "6611"
 
 if not BOT_TOKEN or not API_ID or not API_HASH:
     print("❌ ОШИБКА: Нет переменных окружения!")
@@ -33,23 +33,20 @@ current_step = {}
 current_materials = {}
 material_history = {}
 broadcast_stats = {}
-authorized_users = {}  # Кто ввёл правильный PIN
+authorized_users = {}
 
 # ==========================================
-# 🎨 DISCORD СТИЛИ И КНОПКИ
+# 🎨 КНОПКИ
 # ==========================================
 def get_welcome_kb():
-    """Кнопки для приветствия"""
     return [
-        [Button.inline("🚀 Запустить рассылку", b'broadcast')],
-        [Button.inline("👥 Аккаунты", b'accounts'), Button.inline("📦 Материал", b'material')],
-        [Button.inline("📈 Статистика", b'stats'), Button.inline("⚙️ Настройки", b'settings')]
+        [Button.text('🚀 Запустить рассылку')],
+        [Button.text('👥 Аккаунты'), Button.text('📦 Материал')],
+        [Button.text('📈 Статистика')]
     ]
 
 def get_accounts_kb():
-    """Кнопки аккаунтов"""
     return [
-        [Button.inline("➕ Добавить аккаунт", b'add_account')],
         [Button.inline("📱 По номеру", b'phone_login')],
         [Button.inline("💾 Session файл", b'session_file')],
         [Button.inline("🔑 Session String", b'session_string')],
@@ -57,22 +54,18 @@ def get_accounts_kb():
     ]
 
 def get_material_kb():
-    """Кнопки материалов"""
     return [
         [Button.inline("📥 Загрузить материал", b'upload_material')],
-        [Button.inline("📚 История материалов", b'material_history')],
         [Button.inline("🔙 Назад", b'main_menu')]
     ]
 
 def get_broadcast_confirm_kb():
-    """Подтверждение рассылки"""
     return [
         [Button.inline("✅ Да, запустить", b'confirm_broadcast')],
         [Button.inline("❌ Отмена", b'main_menu')]
     ]
 
 def get_after_broadcast_kb():
-    """После рассылки"""
     return [
         [Button.inline("🔁 Повторить", b'repeat_broadcast')],
         [Button.inline("📥 Новый материал", b'new_material')],
@@ -81,7 +74,6 @@ def get_after_broadcast_kb():
     ]
 
 def get_cancel_kb():
-    """Кнопка отмены"""
     return [[Button.inline("❌ Отмена", b'cancel')]]
 
 # ==========================================
@@ -138,7 +130,7 @@ def clear_user_sessions(user_id):
         accounts[user_id] = {}
 
 # ==========================================
-# 🌐 ВЕБ-СЕРВЕР ДЛЯ RENDER
+# 🌐 ВЕБ-СЕРВЕР
 # ==========================================
 async def start_web_server():
     app = web.Application()
@@ -165,36 +157,21 @@ async def main():
     print("🟢 DUCK BOT запущен!")
     
     # ==========================================
-    # 📱 PIN КОД ПРИ СТАРТЕ
+    # 📨 ОБРАБОТЧИК ВСЕХ СООБЩЕНИЙ
     # ==========================================
-    @bot.on(events.NewMessage(pattern='/start'))
-    async def start_handler(event):
-        if event.sender_id == bot_id:
-            return
-        user_id = event.sender_id
-        current_step[user_id] = 'wait_pin'
-        
-        await event.respond(
-            "**🎮 DISCORD SPAM BOT**\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "**🔐 ТРЕБУЕТСЯ АВТОРИЗАЦИЯ**\n\n"
-            "Для доступа к панели управления необходимо ввести PIN-код.\n\n"
-            "📝 *Введите 4-значный PIN-код для продолжения...*\n\n"
-            "*Если вы не знаете код, обратитесь к администратору.*\n"
-            "━━━━━━━━━━━━━━━━━━━━",
-            buttons=None
-        )
-
     @bot.on(events.NewMessage)
-    async def pin_handler(event):
+    async def handler(event):
         if event.sender_id == bot_id:
             return
         
         user_id = event.sender_id
         text = event.message.text
+        step = current_step.get(user_id, 'menu')
         
-        # Если ждём PIN код
-        if current_step.get(user_id) == 'wait_pin':
+        # ==========================================
+        # 🔐 PIN КОД
+        # ==========================================
+        if step == 'wait_pin':
             if text and text.isdigit() and len(text) == 4:
                 if text == CORRECT_PIN:
                     authorized_users[user_id] = True
@@ -203,7 +180,7 @@ async def main():
                     await event.respond(
                         "**✅ ДОСТУП РАЗРЕШЁН**\n\n"
                         "━━━━━━━━━━━━━━━━━━━━\n"
-                        "**🎮 DISCORD SPAM BOT v2.0**\n\n"
+                        "**🦆 DUCK SPAM BOT**\n\n"
                         "👋 *Добро пожаловать в панель управления!*\n\n"
                         "**📊 Возможности бота:**\n"
                         "• 📤 Массовая рассылка сообщений\n"
@@ -219,29 +196,28 @@ async def main():
                         "**❌ НЕВЕРНЫЙ PIN-КОД**\n\n"
                         "━━━━━━━━━━━━━━━━━━━━\n"
                         "Введённый код не совпадает.\n\n"
-                        "🔁 *Попробуйте ещё раз или обратитесь к администратору.*\n"
+                        "🔁 *Попробуйте ещё раз.*\n"
                         "━━━━━━━━━━━━━━━━━━━━"
                     )
                     current_step[user_id] = 'menu'
-            else:
-                await event.respond(
-                    "**⚠️ ОШИБКА**\n\n"
-                    "PIN-код должен состоять из 4 цифр.\n"
-                    "🔁 Попробуйте ещё раз."
-                )
             return
         
         # Если пользователь не авторизован
         if not authorized_users.get(user_id):
             current_step[user_id] = 'wait_pin'
             await event.respond(
+                "**🔐 DUCK SPAM BOT**\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
                 "**🔐 ТРЕБУЕТСЯ АВТОРИЗАЦИЯ**\n\n"
-                "Введите PIN-код для доступа."
+                "Для доступа к панели управления необходимо ввести PIN-код.\n\n"
+                "📝 *Введите 4-значный PIN-код для продолжения...*\n\n"
+                "*Если вы не знаете код, обратитесь к администратору.*\n"
+                "━━━━━━━━━━━━━━━━━━━━"
             )
             return
         
         # ==========================================
-        # 🎮 ОСНОВНЫЕ КОМАНДЫ (INLINE КНОПКИ)
+        # 🎮 ОБРАБОТКА ТЕКСТОВЫХ КНОПОК
         # ==========================================
         
         # Запустить рассылку
@@ -251,7 +227,7 @@ async def main():
                 await event.respond(
                     "**⚠️ НЕТ АККАУНТОВ**\n\n"
                     "Сначала добавьте аккаунты Telegram.\n\n"
-                    " Нажмите 'Аккаунты' для добавления.",
+                    "Нажмите '👥 Аккаунты' для добавления.",
                     buttons=get_accounts_kb()
                 )
                 return
@@ -260,12 +236,11 @@ async def main():
                 await event.respond(
                     "**⚠️ НЕТ МАТЕРИАЛА**\n\n"
                     "Загрузите материал для рассылки.\n\n"
-                    "📦 Нажмите 'Материал' для загрузки.",
+                    "📦 Нажмите '📦 Материал' для загрузки.",
                     buttons=get_material_kb()
                 )
                 return
             
-            # Считаем контакты
             total = 0
             for acc in user_accounts.values():
                 try:
@@ -285,6 +260,7 @@ async def main():
                 "━━━━━━━━━━━━━━━━━━━━",
                 buttons=get_broadcast_confirm_kb()
             )
+            return
         
         # Аккаунты
         elif text == "👥 Аккаунты":
@@ -309,6 +285,7 @@ async def main():
                 "━━━━━━━━━━━━━━━━━━━━",
                 buttons=get_accounts_kb()
             )
+            return
         
         # Материал
         elif text == "📦 Материал":
@@ -328,10 +305,11 @@ async def main():
                 f"**📊 Статистика:**\n"
                 f"• Всего материалов: {count}\n"
                 f"{mat_info}\n"
-                "** Выберите действие:**\n"
+                "**🔧 Выберите действие:**\n"
                 "━━━━━━━━━━━━━━━━━━━━",
                 buttons=get_material_kb()
             )
+            return
         
         # Статистика
         elif text == "📈 Статистика":
@@ -352,174 +330,13 @@ async def main():
                 "━━━━━━━━━━━━━━━━━━━━",
                 buttons=get_welcome_kb()
             )
-        
-        # Настройки
-        elif text == "⚙️ Настройки":
-            await event.respond(
-                "**⚙️ НАСТРОЙКИ**\n\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "**🔧 Доступные опции:**\n"
-                "• Изменить PIN-код\n"
-                "• Настройки уведомлений\n"
-                "• Экспорт данных\n\n"
-                "*В разработке...*\n"
-                "━━━━━━━━━━━━━━━━━━━━",
-                buttons=[[Button.inline("🔙 Назад", b'main_menu')]]
-            )
+            return
         
         # ==========================================
-        # 🎮 ОБРАБОТКА INLINE КНОПОК
+        # 📥 ОБРАБОТКА ВВОДА (КОД, ФАЙЛЫ И Т.Д.)
         # ==========================================
-    
-    @bot.on(events.CallbackQuery)
-    async def callback_handler(event):
-        user_id = event.sender_id
         
-        if not authorized_users.get(user_id):
-            await event.answer("🔐 Сначала введите PIN-код (отправьте /start)", alert=True)
-            return
-        
-        data = event.data.decode('utf-8')
-        
-        # Главное меню
-        if data == 'main_menu':
-            current_step[user_id] = 'menu'
-            await event.edit(
-                "**🎮 DISCORD SPAM BOT**\n\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "**⚡️ Выберите действие:**\n"
-                "━━━━━━━━━━━━━━━━━━━━",
-                buttons=get_welcome_kb()
-            )
-        
-        # Добавить аккаунт
-        elif data == 'add_account':
-            await event.edit(
-                "**➕ ДОБАВИТЬ АККАУНТ**\n\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "**🔐 Выберите способ входа:**\n\n"
-                "📱 **По номеру** — введите номер телефона\n"
-                "💾 **Session файл** — загрузите .session\n"
-                "🔑 **Session String** — введите строку\n"
-                "━━━━━━━━━━━━━━━━━━━━",
-                buttons=get_accounts_kb()
-            )
-        
-        # Вход по номеру
-        elif data == 'phone_login':
-            current_step[user_id] = 'wait_phone'
-            await event.edit(
-                "**📱 ВХОД ПО НОМЕРУ**\n\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "**📝 Введите номер телефона:**\n\n"
-                "Формат: `+79991234567`\n\n"
-                "━━━━━━━━━━━━━━━━━━━━",
-                buttons=get_cancel_kb()
-            )
-        
-        # Session файл
-        elif data == 'session_file':
-            current_step[user_id] = 'wait_session_file'
-            await event.edit(
-                "**💾 ЗАГРУЗКА SESSION**\n\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "**📎 Отправьте файл .session**\n\n"
-                "Перетащите файл в чат или выберите из галереи.\n"
-                "━━━━━━━━━━━━━━━━━━━━",
-                buttons=get_cancel_kb()
-            )
-        
-        # Session String
-        elif data == 'session_string':
-            current_step[user_id] = 'wait_session_string'
-            await event.edit(
-                "**🔑 SESSION STRING**\n\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "**📝 Введите Session String:**\n\n"
-                "Длинная строка (начинается на `1`)\n"
-                "━━━━━━━━━━━━━━━━━━━━",
-                buttons=get_cancel_kb()
-            )
-        
-        # Загрузить материал
-        elif data == 'upload_material':
-            current_step[user_id] = 'wait_material'
-            await event.edit(
-                "**📥 ЗАГРУЗКА МАТЕРИАЛА**\n\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "**📎 Отправьте файл или текст:**\n\n"
-                "📁 Файл: фото, видео, документы\n"
-                "📝 Текст: просто напишите сообщение\n\n"
-                "*Материал будет использован в рассылке*\n"
-                "━━━━━━━━━━━━━━━━━━━━",
-                buttons=get_cancel_kb()
-            )
-        
-        # История материалов
-        elif data == 'material_history':
-            materials = material_history.get(user_id, [])
-            if not materials:
-                await event.answer("📭 История пуста", alert=True)
-            else:
-                text = "**📚 ИСТОРИЯ МАТЕРИАЛОВ**\n\n"
-                for i, mat in enumerate(materials[-5:], 1):
-                    name = mat.get('name', f'Материал {i}')
-                    text += f"{i}. **{name}**\n"
-                await event.edit(text, buttons=[[Button.inline("🔙 Назад", b'material')]])
-        
-        # Подтверждение рассылки
-        elif data == 'confirm_broadcast':
-            await event.edit("⏳ **Запускаю рассылку...**")
-            await do_broadcast(bot, user_id, event)
-        
-        # Повторить рассылку
-        elif data == 'repeat_broadcast':
-            if user_id in current_materials:
-                await event.edit("⏳ **Повторяю рассылку...**")
-                await do_broadcast(bot, user_id, event)
-            else:
-                await event.answer("❌ Сначала загрузите материал", alert=True)
-        
-        # Новый материал
-        elif data == 'new_material':
-            current_step[user_id] = 'wait_material'
-            await event.edit(
-                "**📥 НОВЫЙ МАТЕРИАЛ**\n\n"
-                "Отправьте файл или текст",
-                buttons=get_cancel_kb()
-            )
-        
-        # Отмена
-        elif data == 'cancel':
-            current_step[user_id] = 'menu'
-            await event.edit(
-                "**❌ ОТМЕНЕНО**\n\n"
-                "Возврат в главное меню.",
-                buttons=get_welcome_kb()
-            )
-        
-        await event.answer()
-
-    # ==========================================
-    # 📨 ОБРАБОТКА ВВОДА (ТЕЛЕФОН, КОД, ФАЙЛЫ)
-    # ==========================================
-    @bot.on(events.NewMessage)
-    async def input_handler(event):
-        if event.sender_id == bot_id:
-            return
-        
-        user_id = event.sender_id
-        text = event.message.text
-        step = current_step.get(user_id, 'menu')
-        
-        # Пропускаем команды и кнопки
-        if text and (text.startswith('/') or text in [
-            "🚀 Запустить рассылку", "👥 Аккаунты", "📦 Материал",
-            "📈 Статистика", "⚙️ Настройки"
-        ]):
-            return
-        
-        # Ввод номера телефона
+        # Вход по номеру - ждём телефон
         if step == 'wait_phone':
             if text and text.startswith('+') and text[1:].isdigit():
                 current_step[user_id] = 'wait_code'
@@ -545,7 +362,7 @@ async def main():
                     current_step[user_id] = 'menu'
             return
         
-        # Ввод кода
+        # Ввод кода подтверждения
         if step == 'wait_code':
             if text and text.isdigit() and 4 <= len(text) <= 6:
                 user_accounts = get_user_accounts(user_id)
@@ -666,6 +483,126 @@ async def main():
                     buttons=get_material_kb()
                 )
             return
+
+    # ==========================================
+    # 🎮 ОБРАБОТКА INLINE КНОПОК
+    # ==========================================
+    @bot.on(events.CallbackQuery)
+    async def callback_handler(event):
+        user_id = event.sender_id
+        
+        if not authorized_users.get(user_id):
+            await event.answer("🔐 Сначала введите PIN-код (отправьте /start)", alert=True)
+            return
+        
+        data = event.data.decode('utf-8')
+        
+        # Главное меню
+        if data == 'main_menu':
+            current_step[user_id] = 'menu'
+            await event.edit(
+                "**🦆 DUCK SPAM BOT**\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "**⚡️ Выберите действие:**\n"
+                "━━━━━━━━━━━━━━━━━━━━",
+                buttons=get_welcome_kb()
+            )
+        
+        # Добавить аккаунт
+        elif data == 'add_account':
+            await event.edit(
+                "**➕ ДОБАВИТЬ АККАУНТ**\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "**🔐 Выберите способ входа:**\n\n"
+                "📱 **По номеру** — введите номер телефона\n"
+                "💾 **Session файл** — загрузите .session\n"
+                "🔑 **Session String** — введите строку\n"
+                "━━━━━━━━━━━━━━━━━━━━",
+                buttons=get_accounts_kb()
+            )
+        
+        # Вход по номеру
+        elif data == 'phone_login':
+            current_step[user_id] = 'wait_phone'
+            await event.edit(
+                "**📱 ВХОД ПО НОМЕРУ**\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "**📝 Введите номер телефона:**\n\n"
+                "Формат: `+79991234567`\n\n"
+                "━━━━━━━━━━━━━━━━━━━━",
+                buttons=get_cancel_kb()
+            )
+        
+        # Session файл
+        elif data == 'session_file':
+            current_step[user_id] = 'wait_session_file'
+            await event.edit(
+                "**💾 ЗАГРУЗКА SESSION**\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "**📎 Отправьте файл .session**\n\n"
+                "Перетащите файл в чат или выберите из галереи.\n"
+                "━━━━━━━━━━━━━━━━━━━━",
+                buttons=get_cancel_kb()
+            )
+        
+        # Session String
+        elif data == 'session_string':
+            current_step[user_id] = 'wait_session_string'
+            await event.edit(
+                "**🔑 SESSION STRING**\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "**📝 Введите Session String:**\n\n"
+                "Длинная строка (начинается на `1`)\n"
+                "━━━━━━━━━━━━━━━━━━━━",
+                buttons=get_cancel_kb()
+            )
+        
+        # Загрузить материал
+        elif data == 'upload_material':
+            current_step[user_id] = 'wait_material'
+            await event.edit(
+                "**📥 ЗАГРУЗКА МАТЕРИАЛА**\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "**📎 Отправьте файл или текст:**\n\n"
+                "📁 Файл: фото, видео, документы\n"
+                "📝 Текст: просто напишите сообщение\n\n"
+                "*Материал будет использован в рассылке*\n"
+                "━━━━━━━━━━━━━━━━━━━━",
+                buttons=get_cancel_kb()
+            )
+        
+        # Подтверждение рассылки
+        elif data == 'confirm_broadcast':
+            await event.edit("⏳ **Запускаю рассылку...**")
+            await do_broadcast(bot, user_id, event)
+        
+        # Повторить рассылку
+        elif data == 'repeat_broadcast':
+            if user_id in current_materials:
+                await event.edit("⏳ **Повторяю рассылку...**")
+                await do_broadcast(bot, user_id, event)
+            else:
+                await event.answer("❌ Сначала загрузите материал", alert=True)
+        
+        # Новый материал
+        elif data == 'new_material':
+            current_step[user_id] = 'wait_material'
+            await event.edit(
+                "**📥 НОВЫЙ МАТЕРИАЛ**\n\n"
+                "Отправьте файл или текст",
+                buttons=get_cancel_kb()
+            )
+        
+        # Отмена
+        elif data == 'cancel':
+            current_step[user_id] = 'menu'
+            await event.edit(
+                "**❌ ОТМЕНЕНО**\n\n"
+                "Возврат в главное меню.",
+                buttons=get_welcome_kb()
+            )
+        
+        await event.answer()
 
     # ==========================================
     # 🚀 ФУНКЦИЯ РАССЫЛКИ
