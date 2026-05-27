@@ -165,13 +165,17 @@ def main_menu_text(uid):
     ], "Выберите действие")
 
 # ==========================================
-# 🌐 ВЕБ-СЕРВЕР
+# 🌐 ВЕБ-СЕРВЕР (ИСПРАВЛЕНО!)
 # ==========================================
 async def start_web():
     app = web.Application()
-    app.router.add_get('/', lambda r: web.Response(text="OK"))
-    await web.AppRunner(app).setup()
-    await web.TCPSite(web.AppRunner(app), '0.0.0.0', int(os.environ.get('PORT', 8080))).start()
+    app.router.add_get('/', lambda r: web.Response(text="🦆 OK"))
+    
+    runner = web.AppRunner(app)
+    await runner.setup()  # ✅ ВАЖНО: setup() перед site!
+    
+    site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 8080)))
+    await site.start()
     print("🌐 Web server ready")
 
 # ==========================================
@@ -223,7 +227,6 @@ async def main():
             if e.file and e.file.name.endswith('.session'):
                 msg = await e.respond("⏳ Загрузка session...", buttons=None)
                 try:
-                    # Очистка старых
                     clear_user(uid)
                     
                     path = await e.download_media(file=f"sessions/acc_{uid}.session")
@@ -250,7 +253,6 @@ async def main():
         # MATERIAL
         if step == 'upload_mat':
             if e.file or txt:
-                # Удаление старого материала
                 current_materials.pop(uid, None)
                 
                 if e.file:
