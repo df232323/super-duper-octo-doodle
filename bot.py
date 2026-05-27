@@ -49,7 +49,7 @@ for d in ['sessions', 'materials']:
     os.makedirs(d, exist_ok=True)
 
 # ==========================================
-# 🛠 ФУНКЦИИ
+#  ФУНКЦИИ
 # ==========================================
 def save_material(uid, mat):
     cursor.execute('INSERT OR REPLACE INTO materials VALUES (?,?,?,?)', 
@@ -166,7 +166,7 @@ async def main():
 
                     await msg.edit(
                         "**✅ АККАУНТ ПОДКЛЮЧЁН!**\n\n"
-                        f"**👤 Имя:** {me.first_name or 'Не указано'}\n"
+                        f"** Имя:** {me.first_name or 'Не указано'}\n"
                         f"**📱 Username:** @{me.username or 'нет'}\n"
                         f"**📞 Номер:** +{me.phone}\n"
                         f"**💬 Всего контактов:** {total}\n"
@@ -175,7 +175,7 @@ async def main():
                         buttons=after_session_kb()
                     )
                 except Exception as err:
-                    await msg.edit(f"❌ **Ошибка:** {str(err)[:200]}")
+                    await msg.edit(f" **Ошибка:** {str(err)[:200]}")
             return
 
         # 📎 ЗАГРУЗКА МАТЕРИАЛА
@@ -222,7 +222,7 @@ async def main():
 
         elif d == 'material':
             current_step[uid] = 'upload_mat'
-            await e.edit("📎 **Отправьте файл или текст**", buttons=[[Button.inline("🔙 Отмена", b'main')]])
+            await e.edit(" **Отправьте файл или текст**", buttons=[[Button.inline("🔙 Отмена", b'main')]])
 
         elif d == 'profile':
             acc = accounts.get(uid, {}).get('active')
@@ -230,7 +230,7 @@ async def main():
                 await e.edit(
                     f"**👤 ПРОФИЛЬ**\n\n"
                     f"**👤 Имя:** {acc['name']}\n"
-                    f"**📱 Username:** @{acc['username']}\n"
+                    f"** Username:** @{acc['username']}\n"
                     f"**📞 Номер:** +{acc['phone']}\n"
                     f"**💬 Взаимных:** {acc['mutual']}",
                     buttons=main_kb()
@@ -257,7 +257,7 @@ async def main():
 
         elif d == 'cancel_broadcast':
             broadcast_cancelled[uid] = True
-            await e.answer("🛑 СТОП", alert=True)
+            await e.answer(" СТОП", alert=True)
 
         await e.answer()
 
@@ -281,8 +281,17 @@ async def main():
             except: 
                 targets = []
 
+            # ✅ ИСПРАВЛЕНО: Если нет контактов, даем кнопки
             if not targets:
-                await e.respond("⚠️ Нет контактов")
+                await e.respond(
+                    "️ **НЕТ КОНТАКТОВ**\n\n"
+                    "Взаимных контактов не найдено.\n\n"
+                    "Попробуйте загрузить другой аккаунт.",
+                    buttons=[
+                        [Button.inline("💾 Загрузить сессию", b'sess_file')],
+                        [Button.inline("🏠 Главное меню", b'main')]
+                    ]
+                )
                 return
 
             total = len(targets)
@@ -346,7 +355,7 @@ async def main():
                 await e.respond(
                     f"**🔐 ВЫХОД ИЗ СЕССИЙ**\n\n"
                     f"**✅ Успешно вышли из всех сессий**\n"
-                    f"**👤 Аккаунт:** {success_out[0]}\n\n"
+                    f"** Аккаунт:** {success_out[0]}\n\n"
                     f"**Закрыто аккаунтов:** {len(success_out)}",
                     buttons=[[Button.inline("🏠 Меню", b'main')]]
                 )
