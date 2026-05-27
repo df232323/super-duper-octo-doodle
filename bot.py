@@ -19,7 +19,11 @@ API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
 CORRECT_PIN = "6611"
 
-logging.basicConfig(filename='bot.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    filename='bot.log',
+    level=logging.DEBUG,  # 🔥 Максимальное логирование
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 conn = sqlite3.connect('bot_database.db', check_same_thread=False)
@@ -39,7 +43,7 @@ for d in ['sessions', 'materials']:
     os.makedirs(d, exist_ok=True)
 
 # ==========================================
-#  ОФОРМЛЕНИЕ
+# 🎨 ОФОРМЛЕНИЕ
 # ==========================================
 def embed(title, desc=None, fields=None, footer=None):
     text = f"**{title}**\n"
@@ -100,12 +104,19 @@ async def main():
     await bot.start(bot_token=BOT_TOKEN)
     bot_id = (await bot.get_me()).id
     logger.info(f"✅ Bot started: {bot_id}")
+    print(f"✅ Bot started: {bot_id}")
 
     @bot.on(events.NewMessage(pattern=r'/start'))
     async def start(e):
         uid = e.sender_id
+        logger.info(f"📩 [START] Received from user {uid}")
+        print(f"📩 [START] Received from user {uid}")
+        
         current_step[uid] = 'pin'
         authorized_users[uid] = False
+        
+        logger.info(f"✅ [START] Set step='pin' for user {uid}")
+        print(f"✅ [START] Set step='pin' for user {uid}")
         
         await e.respond(
             embed("🔐 **ТРЕБУЕТСЯ АВТОРИЗАЦИЯ**",
@@ -116,6 +127,40 @@ async def main():
                   footer="Платформа доставки активирована"),
             buttons=None
         )
+        logger.info(f"✅ [START] Sent PIN request to user {uid}")
+
+    # 🔥 ОТДЕЛЬНЫЙ ОБРАБОТЧИК ДЛЯ PIN (приоритет выше!)
+    @bot.on(events.NewMessage(func=lambda e: e.text and e.text.strip() in ['6611', CORRECT_PIN]))
+    async def pin_handler(e):
+        uid = e.sender_id
+        txt = e.text.strip()
+        step = current_step.get(uid, 'menu')
+        
+        logger.info(f"🔑 [PIN HANDLER] User {uid}, Step: {step}, Text: {txt}")
+        print(f"🔑 [PIN HANDLER] User {uid}, Step: {step}, Text: {txt}")
+        
+        # Проверяем PIN только если ждём его
+        if step == 'pin' and txt == CORRECT_PIN:
+            logger.info(f"✅ [PIN] Correct PIN for user {uid}")
+            print(f"✅ [PIN] Correct PIN for user {uid}")
+            
+            authorized_users[uid] = True
+            current_step[uid] = 'menu'
+            
+            await e.respond(
+                embed("✅ **ДОСТУП РАЗРЕШЁН**",
+                      "Добро пожаловать в панель управления!\n\n"
+                      "🦆 **DUCK SPAM BOT v3.0**\n\n"
+                      "• ⚡ Массовая рассылка\n"
+                      "• 👥 Управление аккаунтами\n"
+                      "• 📎 Загрузка файлов\n"
+                      "• 📊 Статистика",
+                      footer="Воспользуйтесь навигацией ниже"),
+                buttons=get_main_kb()
+            )
+            logger.info(f"✅ [PIN] Sent main menu to user {uid}")
+        else:
+            logger.warning(f"❌ [PIN] Wrong PIN or wrong step for user {uid}")
 
     @bot.on(events.NewMessage)
     async def handler(e):
@@ -123,49 +168,26 @@ async def main():
         txt = e.text
         step = current_step.get(uid, 'menu')
         
-        # 🔥 ИГНОРИРУЕМ ПУСТЫЕ И НЕТЕКСТОВЫЕ СООБЩЕНИЯ
+        # Игнорируем пустые сообщения
         if txt is None or txt.strip() == "":
             return
         
         txt = txt.strip()
         
-        # Игнорируем команды (кроме /start который обрабатывается отдельно)
+        # Игнорируем команды (они обрабатываются отдельно)
         if txt.startswith('/'):
             return
             
         if e.sender_id == bot_id:
             return
-
-        # 🔐 ОБРАБОТКА PIN-КОДА
-        if step == 'pin':
-            # Проверяем только если это чистые 4 цифры
-            if txt.isdigit() and len(txt) == 4:
-                if txt == CORRECT_PIN:
-                    authorized_users[uid] = True
-                    current_step[uid] = 'menu'
-                    logger.info(f"[PIN] User {uid} authorized")
-                    
-                    await e.respond(
-                        embed("✅ **ДОСТУП РАЗРЕШЁН**",
-                              "Добро пожаловать в панель управления!\n\n"
-                              "🦆 **DUCK SPAM BOT v3.0**\n\n"
-                              "• ⚡ Массовая рассылка\n"
-                              "• 👥 Управление аккаунтами\n"
-                              "• 📎 Загрузка файлов\n"
-                              "• 📊 Статистика",
-                              footer="Воспользуйтесь навигацией ниже"),
-                        buttons=get_main_kb()
-                    )
-                else:
-                    await e.respond("❌ **Неверный PIN-код**\n\nПопробуйте снова.", buttons=None)
-            else:
-                # Не отвечаем на мусор, только на текст != 4 цифры
-                await e.respond("⚠️ **PIN-код должен содержать ровно 4 цифры**", buttons=None)
-            return
+        
+        logger.info(f"💬 [MSG] User {uid}, Step: {step}, Text: {txt}")
+        print(f"💬 [MSG] User {uid}, Step: {step}, Text: {txt}")
 
         # Проверка авторизации для остальных команд
         if not authorized_users.get(uid):
-            await e.respond("🔐 **Требуется авторизация**\n\nОтправьте /start", buttons=None)
+            if step != 'pin':  # Если не ждём PIN, то требуем авторизацию
+                await e.respond("🔐 **Требуется авторизация**\n\nОтправьте /start", buttons=None)
             return
 
         # 💾 ЗАГРУЗКА SESSION
@@ -184,7 +206,7 @@ async def main():
                     await client.connect()
                     
                     if not await client.is_user_authorized():
-                        await msg.edit(" **Сессия недействительна!**")
+                        await msg.edit("❌ **Сессия недействительна!**")
                         await client.disconnect()
                         return
                     
@@ -201,7 +223,7 @@ async def main():
                     
                     await msg.edit(embed("✅ **Синхронизация завершена!**", "Аккаунт подключён", [
                         {'name': 'Профиль', 'value': f"@{me.username or 'нет'}", 'emoji': '👤'},
-                        {'name': 'Номер', 'value': f"+{me.phone}", 'emoji': ''},
+                        {'name': 'Номер', 'value': f"+{me.phone}", 'emoji': '📞'},
                         {'name': 'Контакты', 'value': f"Всего: {total}\nВзаимных: {mutual}", 'emoji': '💬'},
                         {'name': 'Состояние', 'value': 'Подключение стабильно', 'emoji': '⚡'}
                     ], footer="Инициализация потока доставки..."))
@@ -209,7 +231,7 @@ async def main():
                     await msg.edit(f"❌ **Ошибка:** {str(err)[:200]}")
             return
 
-        #  МАТЕРИАЛ
+        # 📎 МАТЕРИАЛ
         if step == 'upload_mat':
             if e.file or txt:
                 old_mat = current_materials.get(uid)
@@ -239,6 +261,7 @@ async def main():
             return await e.answer("🔐 Сначала /start", alert=True)
         
         d = e.data.decode()
+        logger.info(f"🔘 [CALLBACK] User {uid}, Data: {d}")
 
         if d == 'main':
             current_step[uid] = 'menu'
@@ -323,7 +346,7 @@ async def main():
                 return
             
             total = sum(len(t) for _,t in targets)
-            status = await e.respond(embed(" **Доставка инициирована...**", f"Обработано: 0/{total}"), buttons=get_active_kb())
+            status = await e.respond(embed("⚡ **Доставка инициирована...**", f"Обработано: 0/{total}"), buttons=get_active_kb())
             
             current, cancelled = 0, False
             for acc, users in targets:
@@ -370,7 +393,7 @@ async def main():
             
             await e.respond(embed("🔐 **Завершение сеансов**", f"Результат: {'✅ Все сессии закрыты' if not fail else f'⚠️ {len(fail)} ошибок'}", [
                 {'name': '✅ Успешно', 'value': '\n'.join(success[:3]), 'emoji': '✅'} if success else {},
-                {'name': ' Ошибки', 'value': '\n'.join(fail[:3]), 'emoji': '❌'} if fail else {}
+                {'name': '❌ Ошибки', 'value': '\n'.join(fail[:3]), 'emoji': '❌'} if fail else {}
             ], "*Все устройства вылогинены из аккаунтов*"), buttons=None)
             
             current_step[uid] = 'menu'
@@ -388,6 +411,7 @@ async def start_web():
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 8080))).start()
+    logger.info("🌐 Web server started")
 
 async def run():
     await asyncio.gather(start_web(), main())
