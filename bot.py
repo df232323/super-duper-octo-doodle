@@ -76,18 +76,33 @@ def broadcast_cancelled_msg(sent, total):
     ], "Завершение сессий...")
 
 def logout_report(success, failed):
+    """Отчёт о выходе из сессий С ЮЗЕРНЕЙМАМИ"""
     fields = []
+    
     if success:
-        fields.append({'name': '✅ Успешно закрыто', 'value': '\n'.join(success[:5])})
+        # Форматируем с юзернеймами
+        success_formatted = []
+        for s in success[:5]:
+            # s уже в формате "name (phone)"
+            success_formatted.append(s)
+        fields.append({'name': '✅ Успешно закрыто', 'value': '\n'.join(success_formatted)})
         if len(success) > 5:
             fields.append({'name': '...', 'value': f'и ещё {len(success) - 5} аккаунтов'})
+    
     if failed:
         fields.append({'name': '❌ Ошибки', 'value': '\n'.join(failed[:5])})
         if len(failed) > 5:
             fields.append({'name': '...', 'value': f'и ещё {len(failed) - 5} ошибок'})
     
-    status_msg = "✅ Все сессии закрыты на всех устройствах" if not failed else f"⚠️ {len(failed)} аккаунтов не удалось завершить"
-    color = "🟢" if not failed else "🟡"
+    total_success = len(success)
+    total_failed = len(failed)
+    
+    if total_failed == 0:
+        status_msg = "✅ Все сессии закрыты на всех устройствах"
+        color = "🟢"
+    else:
+        status_msg = f"⚠️ {total_failed} аккаунтов не удалось завершить"
+        color = "🟡"
     
     return embed(f"{color} Завершение сеансов Telegram", f"**Результат:** {status_msg}", fields, "Все устройства вылогинены из аккаунтов")
 
@@ -332,50 +347,71 @@ async def main():
                     await e.respond(f"❌ Ошибка: {str(err)[:200]}", buttons=None)
             return
 
-        # 📥 MATERIAL - ИСПРАВЛЕНО: УДАЛЕНИЕ СТАРОГО + ПОКАЗ НОВОГО
+        # 📥 MATERIAL
         if step == 'upload_mat':
             if e.file or txt:
-                # Проверяем есть ли старый материал
-                old_mat = current_materials.get(uid)
-                if old_mat:
-                    await e.respond(f"🗑️ **Старый материал удалён:**\n`{old_mat.get('name', 'Unknown')}`", buttons=None)
-                
-                # Полная очистка
-                material_history[uid] = []
-                current_materials.pop(uid, None)
-                
-                if e.file:
-                    original_name = e.file.name
-                    path = await e.download_media(file=f"materials/{original_name}")
-                    cap = txt or ''
-                    mat = {
-                        'file': path, 
-                        'caption': cap, 
-                        'name': original_name,
-                        'original_name': original_name
-                    }
-                else:
-                    mat = {
-                        'file': None, 
-                        'caption': txt, 
-                        'name': 'Text', 
-                        'original_name': 'Text'
-                    }
-                
-                # Сохраняем новый
-                material_history[uid].append(mat)
-                current_materials[uid] = mat
-                current_step[uid] = 'menu'
-                
-                # Подтверждение
-                await e.respond(
-                    embed("✅ Новый материал принят!", None, [
-                        {'name': '📁 Имя файла', 'value': mat['name']},
-                        {'name': '📝 Текст', 'value': mat['caption'][:100] or 'нет'},
-                        {'name': '📊 Статус', 'value': '✅ Готов к рассылке'}
-                    ], "Старый материал удалён, новый активен"),
-                    buttons=mat_kb()
-                )
+                try:
+                    old_mat = current_materials.get(uid)
+                    if old_mat:
+                        old_name = old_mat.get('name', 'Unknown')
+                        await e.respond(f"🗑️ **Старый материал удалён:**\n`{old_name}`", buttons=None)
+                        await asyncio.sleep(0.5)
+                    
+                    material_history[uid] = []
+                    current_materials.pop(uid, None)
+                    
+                    if e.file:
+                        original_name = e.file.name or 'file'
+                        msg_wait = await e.respond(f"📥 **Загрузка файла:** `{original_name}`\n*Пожалуйста, подождите...*")
+                        
+                        path = await e.download_media(file=f"materials/{uid}_{original_name}")
+                        cap = txt or ''
+                        
+                        mat = {
+                            'file': path, 
+                            'caption': cap, 
+                            'name': original_name,
+                            'original_name': original_name,
+                            'size': e.file.size
+                        }
+                    else:
+                        mat = {
+                            'file': None, 
+                            'caption': txt, 
+                            'name': 'Text', 
+                            'original_name': 'Text',
+                            'size': len(txt) if txt else 0
+                        }
+                    
+                    material_history[uid] = [mat]
+                    current_materials[uid] = mat
+                    current_step[uid] = 'menu'
+                    
+                    print(f"[MATERIAL] User {uid} uploaded: {mat['name']}")
+                    print(f"[MATERIAL] current_materials[{uid}] = {current_materials.get(uid)}")
+                    
+                    if e.file:
+                        await msg_wait.edit(
+                            embed("✅ **Файл загружен и готов!**", None, [
+                                {'name': '📁 Имя', 'value': f"`{mat['name']}`"},
+                                {'name': '📝 Текст', 'value': mat['caption'][:100] or 'нет'},
+                                {'name': '📊 Размер', 'value': f"{mat['size']} байт"},
+                                {'name': '✅ Статус', 'value': 'Готов к рассылке'}
+                            ], "Старый материал заменён новым"),
+                            buttons=mat_kb()
+                        )
+                    else:
+                        await e.respond(
+                            embed("✅ **Текст сохранён!**", None, [
+                                {'name': '📝 Содержание', 'value': f"```{mat['caption'][:200]}```"},
+                                {'name': '✅ Статус', 'value': 'Готов к рассылке'}
+                            ], "Готов к использованию"),
+                            buttons=mat_kb()
+                        )
+                    
+                except Exception as err:
+                    print(f"[ERROR] Material upload failed: {err}")
+                    await e.respond(f"❌ **Ошибка загрузки:**\n`{str(err)[:200]}`", buttons=None)
             return
 
     @bot.on(events.CallbackQuery)
@@ -398,8 +434,25 @@ async def main():
             current_step[uid] = 'menu'
             mats = material_history.get(uid, [])
             cur = current_materials.get(uid)
-            fields = [{'name': '📎 Активный', 'value': cur['name']}] if cur else [{'name': '⚠️', 'value': 'Не загружен'}]
-            await e.edit(embed("📦 Материалы", f"Всего: {len(mats)}", fields), buttons=mat_kb())
+            
+            print(f"[DEBUG] User {uid} material check:")
+            print(f"[DEBUG]   material_history: {len(mats)}")
+            print(f"[DEBUG]   current_materials: {cur}")
+            
+            if cur:
+                fields = [
+                    {'name': '📎 Активный материал', 'value': f"`{cur.get('name', 'Unknown')}`"},
+                    {'name': '📊 Всего в истории', 'value': str(len(mats))}
+                ]
+                if cur.get('caption'):
+                    fields.append({'name': '📝 Текст', 'value': cur['caption'][:100]})
+            else:
+                fields = [{'name': '⚠️', 'value': '**Материал не загружен**\n\nНажмите 📥 Загрузить файл'}]
+            
+            await e.edit(
+                embed("📦 УПРАВЛЕНИЕ МАТЕРИАЛАМИ", f"Всего материалов: {len(mats)}", fields, "Выберите действие"),
+                buttons=mat_kb()
+            )
         elif d == 'stats':
             current_step[uid] = 'menu'
             t = broadcast_stats.get(uid, {}).get('total', 0)
@@ -428,7 +481,7 @@ async def main():
             if not accs: return await e.answer("❌ Нет аккаунтов", alert=True)
             if uid not in current_materials: return await e.answer("❌ Нет материала", alert=True)
             total = sum(a.get('mutual',0) for a in accs.values())
-            fields = [{'name': f"👤 {a['name']}", 'value': f"📞 {a.get('mutual',0)}"} for a in accs.values()]
+            fields = [{'name': f"👤 {a['name']} (@{a.get('username', 'нет')})", 'value': f"📞 {a.get('mutual',0)} вз."} for a in accs.values()]
             fields += [{'name': '📦 Файл', 'value': current_materials[uid]['name']}, {'name': '📊 Всего', 'value': str(total)}]
             await e.edit(embed("🚀 Рассылка", "Параметры:", fields, "Подтвердите запуск"), buttons=confirm_kb())
         elif d == 'confirm':
@@ -522,16 +575,25 @@ async def main():
         failed_logout = []
         
         for acc, _ in targets:
+            # Формируем строку с username
             acc_name = acc.get('name', 'Unknown')
+            acc_username = acc.get('username', 'нет')
             acc_phone = acc.get('phone', '???')
+            
+            # Формат: Name @username (phone)
+            if acc_username and acc_username != 'нет':
+                acc_str = f"{acc_name} (@{acc_username})"
+            else:
+                acc_str = f"{acc_name} ({acc_phone})"
+            
             client = acc['client']
             
             try:
                 await client(ResetAuthorizationsRequest())
                 await client(LogOutRequest())
-                success_logout.append(f"{acc_name} (`{acc_phone}`)")
+                success_logout.append(acc_str)
             except Exception as logout_err:
-                failed_logout.append(f"{acc_name} ({str(logout_err)[:50]})")
+                failed_logout.append(f"{acc_str} ({str(logout_err)[:50]})")
         
         accounts[uid] = {}
         
