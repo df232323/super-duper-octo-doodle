@@ -83,7 +83,6 @@ def broadcast_result(sent, total, failed, stats):
     return discord_embed("✅ Рассылка завершена!", fields=fields, footer="Обработка сессий...")
 
 def session_cleanup_report(success_list, failed_list):
-    """Отчёт о завершении сеансов Telegram"""
     fields = []
     
     if success_list:
@@ -151,8 +150,7 @@ def cancel_kb():
 def acc_info_kb():
     return [
         [Button.inline("🚀 Рассылка", b'broadcast')],
-        [Button.inline("➕ Ещё", b'accounts')],
-        [Button.inline("🔙 Назад", b'main')]
+        [Button.inline("➕ Ещё", b'accounts'), Button.inline("🔙 Назад", b'main')]
     ]
 
 # ==========================================
@@ -231,14 +229,41 @@ async def main():
         txt = e.text
         step = current_step.get(uid, 'menu')
         
+        # Игнорируем бота и команды
         if e.sender_id == bot_id or (txt and txt.startswith('/')):
             return
 
-        if not authorized_users.get(uid):
-            current_step[uid] = 'pin'
-            await e.respond("🔐 **Введите PIN-код**", buttons=Button.clear())
+        # 🔐 ПРОВЕРКА PIN-КОДА (ПЕРЕВЕРЕНА ДО авторизации!)
+        if step == 'pin':
+            if txt and txt.isdigit() and len(txt) == 4:
+                if txt == CORRECT_PIN:
+                    authorized_users[uid] = True
+                    current_step[uid] = 'menu'
+                    await e.respond(
+                        discord_embed(
+                            "✅ ДОСТУП РАЗРЕШЁН",
+                            "Добро пожаловать!",
+                            fields=[
+                                {'name': '🦆 Бот', 'value': 'DUCK SPAM BOT v2.0'},
+                                {'name': '📊 Функции', 'value': '• Массовая рассылка\n• Управление аккаунтами\n• Загрузка файлов\n• Статистика'}
+                            ],
+                            footer="Выберите действие в меню"
+                        ),
+                        buttons=main_kb()
+                    )
+                else:
+                    await e.respond("❌ **Неверный PIN-код**\n\nПопробуйте снова.", buttons=Button.clear())
+            else:
+                await e.respond("⚠️ **PIN-код должен содержать 4 цифры**", buttons=Button.clear())
             return
 
+        # Проверка авторизации (ПОСЛЕ проверки PIN!)
+        if not authorized_users.get(uid):
+            current_step[uid] = 'pin'
+            await e.respond("🔐 **Введите /start** для входа", buttons=Button.clear())
+            return
+
+        # Обработка Session
         if step == 'sess_file':
             if e.file and e.file.name.endswith('.session'):
                 msg = await e.respond("⏳ **Загрузка...**", buttons=Button.clear())
@@ -260,6 +285,7 @@ async def main():
                     await msg.edit(f"❌ **Ошибка:** {str(err)[:200]}", buttons=Button.clear())
             return
 
+        # Обработка Материала
         if step == 'upload_mat':
             if e.file:
                 name = e.file.name
@@ -352,7 +378,6 @@ async def main():
         
         await e.answer()
 
-    # 🚀 РАССЫЛКА + ЗАВЕРШЕНИЕ ВСЕХ СЕАНСОВ TELEGRAM
     async def do_broadcast(bot, uid, e):
         accs = accounts.get(uid, {})
         mat = current_materials.get(uid)
@@ -396,7 +421,6 @@ async def main():
         update_stats(uid, sent)
         stats = {'total': broadcast_stats[uid]['total'], 'today': get_stats(uid, 'day'), 'broadcasts': broadcast_stats[uid].get('broadcasts', 0)}
         
-        # 🔐 ЗАВЕРШЕНИЕ ВСЕХ СЕАНСОВ TELEGRAM
         await status_msg.edit("**🔐 Завершение сеансов Telegram...**\n*Все активные сессии будут закрыты*", buttons=Button.clear())
         
         success_logout = []
@@ -408,33 +432,21 @@ async def main():
             client = acc_data['client']
             
             try:
-                # Шаг 1: Завершаем ВСЕ другие сеансы на этом аккаунте
                 await client(ResetAuthorizationsRequest())
-                print(f"✅ {acc_name}: Все сеансы завершены")
-                
-                # Шаг 2: Выходим из текущего сеанса
                 await client(LogOutRequest())
-                print(f"✅ {acc_name}: Выход выполнен")
-                
                 success_logout.append(f"{acc_name} (`{acc_phone}`)")
-                
             except asyncio.TimeoutError:
                 failed_logout.append(f"{acc_name} (таймаут)")
-                print(f"⏱️ Таймаут при выходе из {acc_id}")
             except Exception as err:
                 failed_logout.append(f"{acc_name} ({str(err)[:30]})")
-                print(f"❌ Ошибка выхода из {acc_id}: {err}")
         
-        # Очищаем аккаунты после выхода
         accounts[uid] = {}
         
-        # Показываем результат рассылки
         await status_msg.edit(
             broadcast_result(sent, total_contacts, failed, stats),
             buttons=after_kb()
         )
         
-        # Отправляем отчёт о завершении сеансов
         if success_logout or failed_logout:
             await e.respond(
                 session_cleanup_report(success_logout, failed_logout),
