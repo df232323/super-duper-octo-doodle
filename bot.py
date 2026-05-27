@@ -2,7 +2,6 @@ import asyncio
 import os
 import sqlite3
 import random
-import aiohttp
 import logging
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events
@@ -21,25 +20,26 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
-CRYPTO_BOT_TOKEN = os.getenv('CRYPTO_BOT_TOKEN')
 
-# 🔗 ТВОЯ ГОТОВАЯ ССЫЛКА НА ОПЛАТУ
-PAYMENT_LINK = "https://t.me/send?start=IVa62s1BEaVA"
+# 🔗 АДМИН
+ADMIN_USERNAME = "lapa00001"
+ADMIN_LINK = f"https://t.me/{ADMIN_USERNAME}"
+ADMIN_ID = 7254231560
 
-if not all([BOT_TOKEN, API_ID, API_HASH, CRYPTO_BOT_TOKEN]):
+SUBSCRIPTION_DAYS = 7
+
+if not all([BOT_TOKEN, API_ID, API_HASH]):
     logger.error("❌ НЕ ВСЕ ПЕРЕМЕННЫЕ ЗАДАНЫ!")
     exit(1)
 
-VIP_USERS = [440077089, 789299303]
-SUBSCRIPTION_PRICE = 3
-SUBSCRIPTION_DAYS = 7
+VIP_USERS = [440077089, 789299303, ADMIN_ID]
 
 # ==========================================
 # 💾 БАЗА ДАННЫХ
 # ==========================================
 conn = sqlite3.connect('bot.db', check_same_thread=False)
 cursor = conn.cursor()
-cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, subscription_end TEXT, payment_attempts TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, subscription_end TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 cursor.execute('''CREATE TABLE IF NOT EXISTS materials (user_id INTEGER PRIMARY KEY, file_path TEXT, caption TEXT, name TEXT)''')
 conn.commit()
 
@@ -49,62 +49,10 @@ current_materials = {}
 broadcast_stats = {}
 broadcast_cancelled = {}
 broadcast_queue = {}
-payment_attempts = {}  # {user_id: timestamp}
+admin_step = {}
 
 for d in ['sessions', 'materials']:
     os.makedirs(d, exist_ok=True)
-
-# ==========================================
-# 💳 CRYPTO BOT API
-# ==========================================
-class CryptoBotAPI:
-    def __init__(self, token):
-        self.token = token
-        self.base_url = "https://pay.crypt.bot/api"
-        self.headers = {'Crypto-Bot-Api-Token': token, 'Content-Type': 'application/json'}
-
-    async def get_all_invoices(self):
-        """Получить все счета"""
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"{self.base_url}/getInvoices", headers=self.headers) as resp:
-                    res = await resp.json()
-                    if res.get('ok'):
-                        return res.get('result', [])
-                    return []
-        except Exception as e:
-            logger.error(f"❌ Error getting invoices: {e}")
-            return []
-
-    async def check_payment_for_user(self, user_id):
-        """Проверить есть ли оплаченный счет на $3 за последние 24 часа"""
-        try:
-            invoices = await self.get_all_invoices()
-            logger.info(f"🔍 Found {len(invoices)} total invoices")
-            
-            for inv in invoices:
-                # Проверяем: статус paid, сумма $3, создан недавно
-                if (inv.get('status') == 'paid' and 
-                    float(inv.get('amount', 0)) == SUBSCRIPTION_PRICE and
-                    inv.get('asset') == 'USDT'):
-                    
-                    # Проверяем дату (не старше 24 часов)
-                    created_at = inv.get('created_at')
-                    if created_at:
-                        try:
-                            inv_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                            if datetime.now(inv_date.tzinfo) - inv_date < timedelta(hours=24):
-                                logger.info(f"✅ Found paid invoice for ${inv.get('amount')} from {inv_date}")
-                                return True
-                        except:
-                            pass
-            
-            return False
-        except Exception as e:
-            logger.error(f"❌ Error checking payment: {e}")
-            return False
-
-crypto_bot = CryptoBotAPI(CRYPTO_BOT_TOKEN)
 
 # ==========================================
 # 🛠 ФУНКЦИИ
@@ -147,13 +95,17 @@ def update_stats(uid, count):
     broadcast_stats[uid]['total'] += count
     broadcast_stats[uid]['today'] += count
 
+def get_all_users():
+    cursor.execute('SELECT user_id FROM users')
+    return [row[0] for row in cursor.fetchall()]
+
 # ==========================================
 # 🎨 UI КНОПКИ
 # ==========================================
 def main_kb(has_sub, is_vip=False):
     if not has_sub:
         return [
-            [Button.inline("💳 Оплатить подписку ($3)", b'pay')],
+            [Button.url("✍️ Написать админу", ADMIN_LINK)],
             [Button.inline("👤 Мой профиль", b'profile')]
         ]
     sub_txt = "👑 VIP (Вечная)" if is_vip else f"✅ Активна ({has_sub} дн.)" if isinstance(has_sub, int) else "✅"
@@ -163,11 +115,11 @@ def main_kb(has_sub, is_vip=False):
         [Button.inline("📊 Статистика", b'stats')]
     ]
 
-def payment_kb():
+def admin_kb():
     return [
-        [Button.url("💳 Перейти к оплате ($3)", PAYMENT_LINK)],
-        [Button.inline("🔄 Проверить оплату", b'check_payment')],
-        [Button.inline("🔙 Отмена", b'main')]
+        [Button.inline("👤 Выдать доступ", b'admin_grant')],
+        [Button.inline("📢 Рассылка", b'admin_broadcast')],
+        [Button.inline("🔙 Назад", b'main')]
     ]
 
 def after_session_kb():
@@ -226,18 +178,28 @@ async def main():
         else:
             msg = (
                 "**🦆 DUCK SPAM BOT**\n\n"
-                "**❌ ПОДПИСКА НЕ НАЙДЕНА**\n\n"
-                "**💰 Стоимость подписки:**\n"
-                f"💵 **${SUBSCRIPTION_PRICE}**\n"
-                f"📅 **{SUBSCRIPTION_DAYS} дней**\n\n"
-                "**Для оплаты:**\n"
-                "1. Нажмите кнопку 'Оплатить подписку'\n"
-                "2. Оплатите $3 в CryptoBot\n"
-                "3. Нажмите 'Проверить оплату'\n\n"
-                "Выберите действие:"
+                "**🔐 ДОСТУП ЗАКРЫТ**\n\n"
+                "**💰 Для покупки подписки:**\n"
+                f"💵 **$3** / **{SUBSCRIPTION_DAYS} дней**\n\n"
+                "**Свяжитесь с администратором:**\n"
+                "Нажмите кнопку ниже",
             )
 
-        await e.respond(msg, buttons=main_kb(has_sub, is_vip))
+        if uid == ADMIN_ID:
+            await e.respond(msg, buttons=admin_kb())
+        else:
+            await e.respond(msg, buttons=main_kb(has_sub, is_vip))
+
+    @bot.on(events.NewMessage(pattern=r'/admin'))
+    async def admin_cmd(e):
+        if e.sender_id != ADMIN_ID:
+            return
+        
+        await e.respond(
+            "**👤 АДМИН ПАНЕЛЬ**\n\n"
+            "Выберите действие:",
+            buttons=admin_kb()
+        )
 
     @bot.on(events.NewMessage)
     async def handler(e):
@@ -247,9 +209,66 @@ async def main():
         txt = txt.strip()
 
         has_sub, _ = check_subscription(uid)
-        if not has_sub and step not in ['pay_pending']:
-            await e.respond("🔐 **Требуется подписка**\n\nНажмите /start", buttons=[[Button.inline("💳 Оплатить $3", b'pay')]])
+        if not has_sub and step not in ['pay_pending'] and uid != ADMIN_ID:
+            await e.respond("🔐 **Требуется подписка**\n\nНажмите /start", buttons=[[Button.url("✍️ Написать админу", ADMIN_LINK)]])
             return
+
+        # ОБРАБОТКА АДМИН КОМАНД
+        if uid == ADMIN_ID:
+            admin_s = admin_step.get(uid)
+            
+            if admin_s == 'grant_wait_username':
+                # Получаем username (с @ или без)
+                username = txt.strip().lstrip('@')
+                admin_step[uid] = 'grant_wait_days'
+                admin_step[f'{uid}_username'] = username
+                await e.respond(f"**👤 Введите количество дней:**\n\nДля пользователя: **@{username}**")
+                return
+            
+            if admin_s == 'grant_wait_days':
+                try:
+                    days = int(txt)
+                    username = admin_step.get(f'{uid}_username')
+                    
+                    if username:
+                        # Пытаемся получить пользователя по username
+                        try:
+                            entity = await bot.get_entity(username)
+                            target_uid = entity.id
+                            target_username = entity.username or username
+                            
+                            # Выдаем подписку
+                            set_subscription(target_uid, days)
+                            
+                            # Обновляем username в БД если есть
+                            cursor.execute('UPDATE users SET username = ? WHERE user_id = ?', (target_username, target_uid))
+                            conn.commit()
+                            
+                            await e.respond(f"✅ **Подписка выдана!**\n\n👤 Пользователь: **@{target_username}** (`{target_uid}`)\n📅 Дней: {days}")
+                            
+                            # Уведомляем пользователя
+                            try:
+                                await bot.send_message(target_uid, f"**✅ ВАМ ВЫДАНА ПОДПИСКА!**\n\n📅 На {days} дней\n👤 Админ: @{ADMIN_USERNAME}\n\nОтправьте /start")
+                            except:
+                                await e.respond(f"⚠️ Не удалось отправить уведомление пользователю (возможно, он не запускал бота)")
+                            
+                        except Exception as entity_err:
+                            await e.respond(f"❌ **Пользователь не найден!**\n\nОшибка: {str(entity_err)[:100]}\n\nПроверьте username.")
+                    
+                    # Сброс
+                    admin_step[uid] = None
+                    admin_step.pop(f'{uid}_username', None)
+                    return
+                    
+                except ValueError:
+                    await e.respond("❌ **Неверное число**\n\nВведите количество дней (число):")
+                    return
+            
+            if admin_s == 'broadcast_wait_text':
+                admin_step[uid] = 'broadcast_wait_photo'
+                admin_step[f'{uid}_text'] = txt
+                await e.respond("**📎 Отправьте фото (или нажмите 'Пропустить')**\n\nИли отправьте /skip_photo")
+                return
 
         if step == 'sess_file':
             if e.file and e.file.name.endswith('.session'):
@@ -304,6 +323,33 @@ async def main():
                 await e.respond(f"**✅ Файл загружен!**\n\n📁 {mat['name']}\n📝 {mat['caption'][:50] or 'нет'}", buttons=main_kb(has_sub, uid in VIP_USERS))
             return
 
+    @bot.on(events.NewMessage(pattern=r'/skip_photo'))
+    async def skip_photo(e):
+        if e.sender_id != ADMIN_ID:
+            return
+        
+        admin_s = admin_step.get(e.sender_id)
+        if admin_s == 'broadcast_wait_photo':
+            text = admin_step.get(f'{e.sender_id}_text', '')
+            users = get_all_users()
+            sent_count = 0
+            failed_count = 0
+            
+            msg = await e.respond(f"**📢 Отправка рассылки...**\n\nВсего пользователей: {len(users)}")
+            
+            for user_id in users:
+                try:
+                    await bot.send_message(user_id, text)
+                    sent_count += 1
+                except Exception as send_err:
+                    failed_count += 1
+                    logger.error(f"Failed to send to {user_id}: {send_err}")
+                await asyncio.sleep(0.1)
+            
+            await msg.edit(f"**✅ Рассылка завершена!**\n\n✅ Отправлено: {sent_count}\n❌ Ошибок: {failed_count}")
+            admin_step[e.sender_id] = None
+            admin_step.pop(f'{e.sender_id}_text', None)
+
     @bot.on(events.CallbackQuery)
     async def cb(e):
         uid, d = e.sender_id, e.data.decode()
@@ -312,66 +358,26 @@ async def main():
 
         if d == 'main':
             current_step[uid] = 'menu'
-            await e.edit("**🦆 DUCK SPAM BOT**\n\n" + 
-                ("👑 VIP (Вечная)" if is_vip else "✅ Активна" if has_sub else "❌ Нет подписки") + 
-                "\n\nВыберите действие:", buttons=main_kb(has_sub, is_vip))
-
-        elif d == 'pay':
-            if has_sub: 
-                return await e.answer("✅ У вас уже есть подписка!", alert=True)
-            
-            current_step[uid] = 'pay_pending'
-            payment_attempts[uid] = datetime.now()
-            
-            await e.respond(
-                "**💳 ОПЛАТА ПОДПИСКИ**\n\n"
-                f"💰 **Сумма:** ${SUBSCRIPTION_PRICE}\n"
-                f"📅 **Период:** {SUBSCRIPTION_DAYS} дней\n"
-                f"💎 **Метод:** USDT (TRC20)\n\n"
-                "**Инструкция:**\n"
-                "1. Нажмите кнопку 'Перейти к оплате'\n"
-                "2. Оплатите ровно **$3** в CryptoBot\n"
-                "3. Вернитесь в бот и нажмите 'Проверить оплату'\n\n"
-                "*Счет действителен 24 часа*",
-                buttons=payment_kb()
-            )
-
-        elif d == 'check_payment':
-            await e.answer("🔄 Проверка оплаты...", alert=False)
-            
-            # Проверяем оплату через API
-            is_paid = await crypto_bot.check_payment_for_user(uid)
-            
-            if is_paid:
-                # Активируем подписку
-                set_subscription(uid, SUBSCRIPTION_DAYS)
-                current_step[uid] = 'menu'
-                payment_attempts.pop(uid, None)
-                
-                await e.respond(
-                    "**✅ ОПЛАТА ПОДТВЕРЖДЕНА!**\n\n"
-                    f"💰 **Сумма:** ${SUBSCRIPTION_PRICE}\n"
-                    f"📅 **Подписка активирована на {SUBSCRIPTION_DAYS} дней**\n\n"
-                    "🎉 *Теперь вы можете пользоваться всеми функциями бота!*\n\n"
-                    "Отправьте /start для начала работы.",
-                    buttons=main_kb(SUBSCRIPTION_DAYS, False)
-                )
-                logger.info(f"✅ Payment confirmed for user {uid}")
+            admin_step[uid] = None
+            if uid == ADMIN_ID:
+                await e.edit("**👤 АДМИН ПАНЕЛЬ**\n\nВыберите действие:", buttons=admin_kb())
             else:
-                await e.edit(
-                    "⏳ **Оплата пока не найдена**\n\n"
-                    "Если вы уже оплатили:\n"
-                    "• Подождите 1-2 минуты\n"
-                    "• Убедитесь что оплатили ровно **$3**\n"
-                    "• Нажмите 'Проверить оплату' снова\n\n"
-                    "*Или свяжитесь с поддержкой*",
-                    buttons=payment_kb()
-                )
-                logger.info(f"⏳ Payment not found for user {uid}")
+                await e.edit("**🦆 DUCK SPAM BOT**\n\n" + 
+                    ("👑 VIP (Вечная)" if is_vip else "✅ Активна" if has_sub else "❌ Нет подписки") + 
+                    "\n\nВыберите действие:", buttons=main_kb(has_sub, is_vip))
+
+        elif d == 'admin_grant':
+            if uid != ADMIN_ID: return
+            admin_step[uid] = 'grant_wait_username'
+            await e.respond("**👤 Введите username пользователя:**\n\nПример: `@username` или `username`")
+
+        elif d == 'admin_broadcast':
+            if uid != ADMIN_ID: return
+            admin_step[uid] = 'broadcast_wait_text'
+            await e.respond("**📢 РАССЫЛКА**\n\nВведите текст сообщения:")
 
         elif d == 'broadcast':
-            if not has_sub: 
-                return await e.answer("❌ Нет подписки!", alert=True)
+            if not has_sub: return await e.answer("❌ Нет подписки!", alert=True)
             current_step[uid] = 'menu'
             if not accounts.get(uid):
                 await e.edit("**⚡ ЗАПУСК РАССЫЛКИ**\n\n🔐 Загрузите сессию:", 
@@ -391,19 +397,26 @@ async def main():
 
         elif d == 'profile':
             user = get_user(uid)
-            sub_txt = "👑 **VIP (Вечная)**" if is_vip else f"✅ Активна ({days} дн.)" if has_sub else "❌ Неактивна"
+            if is_vip:
+                sub_txt = "👑 **VIP (Вечная)**"
+            elif has_sub:
+                sub_txt = f"✅ Активна ({days} дн.)"
+            else:
+                sub_txt = "❌ Неактивна"
+            
             acc_txt = ""
             if accounts.get(uid):
                 a = accounts[uid]['active']
                 acc_txt = f"\n\n**📱 Аккаунт:**\n👤 {a['name']}\n📞 +{a['phone']}\n💬 {a['mutual']} вз."
             created = user[3] if user and len(user) > 3 else 'N/A'
             await e.edit(f"**👤 ПРОФИЛЬ**\n\n**ID:** `{uid}`\n**Подписка:** {sub_txt}\n**Регистрация:** {created}\n{acc_txt}", 
-                buttons=main_kb(has_sub, is_vip))
+                buttons=admin_kb() if uid == ADMIN_ID else main_kb(has_sub, is_vip))
 
         elif d == 'stats':
-            if not has_sub: return await e.answer("❌ Нет подписки!", alert=True)
+            if not has_sub and uid != ADMIN_ID: return await e.answer("❌ Нет подписки!", alert=True)
             s = broadcast_stats.get(uid, {'total': 0, 'today': 0})
-            await e.edit(f"**📊 СТАТИСТИКА**\n\nВсего: {s['total']}\nСегодня: {s['today']}", buttons=main_kb(has_sub, is_vip))
+            await e.edit(f"**📊 СТАТИСТИКА**\n\nВсего: {s['total']}\nСегодня: {s['today']}", 
+                buttons=admin_kb() if uid == ADMIN_ID else main_kb(has_sub, is_vip))
 
         elif d == 'confirm':
             if not has_sub or uid not in current_materials: return await e.answer("❌ Нет подписки или материала!", alert=True)
@@ -482,6 +495,7 @@ async def start_web():
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 8080))).start()
+    logger.info(f"🌐 Web server started")
 
 async def run():
     await asyncio.gather(start_web(), main())
