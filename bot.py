@@ -72,7 +72,6 @@ def set_subscription(uid, days=7):
     logger.info(f"✅ Subscription set for user {uid} until {end_date}")
 
 def revoke_subscription(uid):
-    """Отозвать подписку у пользователя"""
     cursor.execute('UPDATE users SET subscription_end = NULL WHERE user_id = ?', (uid,))
     conn.commit()
     logger.info(f"❌ Subscription revoked for user {uid}")
@@ -107,6 +106,16 @@ def get_all_users():
     users = [row[0] for row in cursor.fetchall()]
     logger.info(f"📊 Found {len(users)} total users in database")
     return users
+
+def get_user_by_username(username):
+    """Ищем пользователя в БД по username"""
+    username = username.strip().lstrip('@')
+    cursor.execute('SELECT user_id, username FROM users WHERE username LIKE ? OR username LIKE ?', 
+                   (f'%{username}%', f'@{username}%'))
+    result = cursor.fetchone()
+    if result:
+        return result[0], result[1]
+    return None, None
 
 # ==========================================
 # 🎨 UI КНОПКИ
@@ -158,10 +167,13 @@ async def main():
     @bot.on(events.NewMessage(pattern=r'/start'))
     async def start_cmd(e):
         uid = e.sender_id
-        add_user(uid, e.sender.username)
+        username = e.sender.username
+        add_user(uid, username)
         current_step[uid] = 'menu'
         has_sub, days = check_subscription(uid)
         is_vip = uid in VIP_USERS
+
+        logger.info(f"User {uid} (@{username}) pressed /start. Has sub: {has_sub}, Is VIP: {is_vip}")
 
         if is_vip:
             msg = (
@@ -223,16 +235,6 @@ async def main():
         has_sub, _ = check_subscription(uid)
         is_vip = uid in VIP_USERS
 
-        # 🔐 ПРОВЕРКА ПОДПИСКИ - БЛОКИРОВКА ВСЕГО ФУНКЦИОНАЛА
-        if not has_sub and not is_vip and uid != ADMIN_ID:
-            await e.respond(
-                "**🔐 ДОСТУП ЗАБЛОКИРОВАН**\n\n"
-                "У вас нет активной подписки.\n"
-                "Для получения доступа свяжитесь с админом.",
-                buttons=[[Button.url("✍️ Написать админу", ADMIN_LINK)]]
-            )
-            return
-
         # ОБРАБОТКА АДМИН КОМАНД
         if uid == ADMIN_ID:
             admin_s = admin_step.get(uid)
@@ -251,23 +253,43 @@ async def main():
                     username = admin_step.get(f'{uid}_username')
                     
                     if username:
-                        try:
-                            entity = await bot.get_entity(username)
-                            target_uid = entity.id
-                            target_username = entity.username or username
-                            
-                            set_subscription(target_uid, days)
-                            cursor.execute('UPDATE users SET username = ? WHERE user_id = ?', (target_username, target_uid))
-                            conn.commit()
-                            
-                            await e.respond(f"✅ **Подписка выдана!**\n\n👤 Пользователь: **@{target_username}** (`{target_uid}`)\n📅 Дней: {days}")
-                            
+                        # Сначала ищем в БД
+                        target_uid, found_username = get_user_by_username(username)
+                        
+                        if not target_uid:
+                            # Если не нашли в БД, пробуем через Telegram
                             try:
-                                await bot.send_message(target_uid, f"**✅ ВАМ ВЫДАНА ПОДПИСКА!**\n\n📅 На {days} дней\n👤 Админ: @{ADMIN_USERNAME}\n\nОтправьте /start")
-                            except: pass
-                            
-                        except Exception as entity_err:
-                            await e.respond(f"❌ **Пользователь не найден!**\n\nОшибка: {str(entity_err)[:100]}")
+                                entity = await bot.get_entity(username)
+                                target_uid = entity.id
+                                found_username = entity.username or username
+                                # Добавляем в БД
+                                add_user(target_uid, found_username)
+                            except Exception as entity_err:
+                                await e.respond(f"❌ **Пользователь не найден!**\n\n"
+                                              f"Пользователь @{username} не найден ни в базе, ни в Telegram.\n\n"
+                                              f"Убедитесь что:\n"
+                                              f"• Пользователь нажимал /start\n"
+                                              f"• Username введен верно\n\n"
+                                              f"Ошибка: {str(entity_err)[:100]}")
+                                admin_step[uid] = None
+                                admin_step.pop(f'{uid}_username', None)
+                                return
+                        
+                        # Выдаем подписку
+                        set_subscription(target_uid, days)
+                        cursor.execute('UPDATE users SET username = ? WHERE user_id = ?', (found_username, target_uid))
+                        conn.commit()
+                        
+                        await e.respond(f"✅ **Подписка выдана!**\n\n"
+                                      f"👤 Пользователь: **@{found_username}** (`{target_uid}`)\n"
+                                      f"📅 Дней: {days}")
+                        
+                        try:
+                            await bot.send_message(target_uid, f"**✅ ВАМ ВЫДАНА ПОДПИСКА!**\n\n"
+                                                  f"📅 На {days} дней\n"
+                                                  f"👤 Админ: @{ADMIN_USERNAME}\n\n"
+                                                  f"Отправьте /start")
+                        except: pass
                     
                     admin_step[uid] = None
                     admin_step.pop(f'{uid}_username', None)
@@ -277,41 +299,50 @@ async def main():
                     await e.respond("❌ **Неверное число**\n\nВведите количество дней:")
                     return
             
-            # ЗАБРАТЬ ДОСТУП
+            # ЗАБРАТЬ ДОСТУП - ИСПРАВЛЕНО
             if admin_s == 'revoke_wait_username':
                 username = txt.strip().lstrip('@')
-                try:
-                    entity = await bot.get_entity(username)
-                    target_uid = entity.id
-                    target_username = entity.username or username
-                    
-                    # Проверяем есть ли подписка
-                    has_sub_check, _ = check_subscription(target_uid)
-                    if not has_sub_check and target_uid not in VIP_USERS:
-                        await e.respond(f"⚠️ **У пользователя нет подписки!**\n\n👤 @{target_username} (`{target_uid}`)")
-                        admin_step[uid] = None
-                        admin_step.pop(f'{uid}_revoke_username', None)
-                        return
-                    
-                    # Запрашиваем подтверждение
-                    admin_step[uid] = 'revoke_confirm'
-                    admin_step[f'{uid}_revoke_uid'] = target_uid
-                    admin_step[f'{uid}_revoke_username'] = target_username
-                    
-                    await e.respond(
-                        f"**⚠️ ПОДТВЕРДИТЕ ОТЗЫВ ПОДПИСКИ**\n\n"
-                        f"👤 Пользователь: **@{target_username}** (`{target_uid}`)\n\n"
-                        f"Напишите **да** для подтверждения\n"
-                        f"или **нет** для отмены",
-                        buttons=[[Button.inline("❌ Отмена", b'main')]]
-                    )
-                    return
-                    
-                except Exception as entity_err:
-                    await e.respond(f"❌ **Пользователь не найден!**\n\nОшибка: {str(entity_err)[:100]}")
+                
+                # Ищем в БД
+                target_uid, found_username = get_user_by_username(username)
+                
+                if not target_uid:
+                    await e.respond(f"❌ **Пользователь не найден в базе!**\n\n"
+                                  f"Пользователь @{username} не найден в базе данных.\n\n"
+                                  f"Убедитесь что:\n"
+                                  f"• Пользователь нажимал /start в боте\n"
+                                  f"• Username введен верно (без @ или с @)\n\n"
+                                  f"💡 **Совет:** Используйте ID пользователя вместо username\n"
+                                  f"ID можно узнать в профиле пользователя",
+                                  buttons=[[Button.inline("🔙 Отмена", b'main')]])
                     admin_step[uid] = None
                     admin_step.pop(f'{uid}_revoke_username', None)
                     return
+                
+                # Проверяем есть ли подписка
+                has_sub_check, _ = check_subscription(target_uid)
+                if not has_sub_check and target_uid not in VIP_USERS:
+                    await e.respond(f"⚠️ **У пользователя нет активной подписки!**\n\n"
+                                  f"👤 @{found_username} (`{target_uid}`)\n\n"
+                                  f"Нечего отзывать.",
+                                  buttons=[[Button.inline("🔙 Отмена", b'main')]])
+                    admin_step[uid] = None
+                    admin_step.pop(f'{uid}_revoke_username', None)
+                    return
+                
+                # Запрашиваем подтверждение
+                admin_step[uid] = 'revoke_confirm'
+                admin_step[f'{uid}_revoke_uid'] = target_uid
+                admin_step[f'{uid}_revoke_username'] = found_username
+                
+                await e.respond(
+                    f"**⚠️ ПОДТВЕРДИТЕ ОТЗЫВ ПОДПИСКИ**\n\n"
+                    f"👤 Пользователь: **@{found_username}** (`{target_uid}`)\n\n"
+                    f"Напишите **да** для подтверждения\n"
+                    f"или **нет** для отмены",
+                    buttons=[[Button.inline("❌ Отмена", b'main')]]
+                )
+                return
             
             if admin_s == 'revoke_confirm':
                 if txt.lower() in ['да', 'yes', 'y']:
@@ -321,10 +352,14 @@ async def main():
                     if target_uid:
                         revoke_subscription(target_uid)
                         
-                        await e.respond(f"✅ **Подписка отозвана!**\n\n👤 Пользователь: **@{target_username}** (`{target_uid}`)\n\nДоступ к боту заблокирован.")
+                        await e.respond(f"✅ **Подписка отозвана!**\n\n"
+                                      f"👤 Пользователь: **@{target_username}** (`{target_uid}`)\n\n"
+                                      f"Доступ к боту заблокирован.")
                         
                         try:
-                            await bot.send_message(target_uid, f"**❌ ВАША ПОДПИСКА ОТОЗВАНА!**\n\nДоступ к боту заблокирован.\n\n👤 Админ: @{ADMIN_USERNAME}")
+                            await bot.send_message(target_uid, f"**❌ ВАША ПОДПИСКА ОТОЗВАНА!**\n\n"
+                                                  f"Доступ к боту заблокирован.\n\n"
+                                                  f"👤 Админ: @{ADMIN_USERNAME}")
                         except: pass
                     
                     admin_step[uid] = None
@@ -345,7 +380,6 @@ async def main():
                 await e.respond("**📎 Отправьте фото (или нажмите 'Пропустить')**\n\nИли отправьте /skip_photo")
                 return
             
-            # Обработка фото для рассылки
             if admin_s == 'broadcast_wait_photo' and e.file:
                 try:
                     photo_path = await e.download_media(file=f"materials/admin_broadcast_photo.jpg")
@@ -355,6 +389,16 @@ async def main():
                 except Exception as err:
                     await e.respond(f"❌ Ошибка сохранения фото: {err}")
                     return
+
+        # 🔐 ПРОВЕРКА ПОДПИСКИ - ТЕПЕРЬ ПОСЛЕ АДМИНА
+        if not has_sub and not is_vip and uid != ADMIN_ID:
+            await e.respond(
+                "**🔐 ДОСТУП ЗАБЛОКИРОВАН**\n\n"
+                "У вас нет активной подписки.\n"
+                "Для получения доступа свяжитесь с админом.",
+                buttons=[[Button.url("✍️ Написать админу", ADMIN_LINK)]]
+            )
+            return
 
         # ЗАГРУЗКА СЕССИИ
         if step == 'sess_file':
@@ -396,7 +440,6 @@ async def main():
                     await msg.edit(f"❌ **Ошибка:** {str(err)[:200]}")
             return
 
-        # ЗАГРУЗКА МАТЕРИАЛА
         if step == 'upload_mat':
             if e.file or txt:
                 current_materials.pop(uid, None)
@@ -485,7 +528,10 @@ async def main():
         elif d == 'admin_revoke':
             if uid != ADMIN_ID: return
             admin_step[uid] = 'revoke_wait_username'
-            await e.respond("**👤 Введите username пользователя:**\n\nУ кого забрать доступ:\n`@username`")
+            await e.respond("**👤 Введите username пользователя:**\n\n"
+                          "**У кого забрать доступ:**\n"
+                          "(@username или просто username)\n\n"
+                          "*Или используйте ID пользователя*")
 
         elif d == 'admin_broadcast':
             if uid != ADMIN_ID: return
