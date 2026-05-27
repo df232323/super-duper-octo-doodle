@@ -76,35 +76,20 @@ def broadcast_cancelled_msg(sent, total):
     ], "Завершение сессий...")
 
 def logout_report(success, failed):
-    """Отчёт о выходе из сессий"""
     fields = []
-    
     if success:
         fields.append({'name': '✅ Успешно закрыто', 'value': '\n'.join(success[:5])})
         if len(success) > 5:
             fields.append({'name': '...', 'value': f'и ещё {len(success) - 5} аккаунтов'})
-    
     if failed:
         fields.append({'name': '❌ Ошибки', 'value': '\n'.join(failed[:5])})
         if len(failed) > 5:
             fields.append({'name': '...', 'value': f'и ещё {len(failed) - 5} ошибок'})
     
-    total_success = len(success)
-    total_failed = len(failed)
+    status_msg = "✅ Все сессии закрыты на всех устройствах" if not failed else f"⚠️ {len(failed)} аккаунтов не удалось завершить"
+    color = "🟢" if not failed else "🟡"
     
-    if total_failed == 0:
-        status_msg = "✅ Все сессии закрыты на всех устройствах"
-        color = "🟢"
-    else:
-        status_msg = f"⚠️ {total_failed} аккаунтов не удалось завершить"
-        color = "🟡"
-    
-    return embed(
-        f"{color} Завершение сеансов Telegram",
-        f"**Результат:** {status_msg}",
-        fields=fields,
-        footer="Все устройства вылогинены из аккаунтов"
-    )
+    return embed(f"{color} Завершение сеансов Telegram", f"**Результат:** {status_msg}", fields, "Все устройства вылогинены из аккаунтов")
 
 # ==========================================
 # 🎨 КНОПКИ
@@ -149,8 +134,7 @@ def cancel_kb():
 def acc_action_kb():
     return [
         [Button.inline("🚀 Рассылка", b'broadcast')],
-        [Button.inline("➕ Ещё аккаунт", b'accounts')],
-        [Button.inline("🔙 Назад", b'main')]
+        [Button.inline("➕ Ещё аккаунт", b'accounts'), Button.inline("🔙 Назад", b'main')]
     ]
 
 # ==========================================
@@ -348,9 +332,15 @@ async def main():
                     await e.respond(f"❌ Ошибка: {str(err)[:200]}", buttons=None)
             return
 
-        # 📥 MATERIAL
+        # 📥 MATERIAL - ИСПРАВЛЕНО: УДАЛЕНИЕ СТАРОГО + ПОКАЗ НОВОГО
         if step == 'upload_mat':
             if e.file or txt:
+                # Проверяем есть ли старый материал
+                old_mat = current_materials.get(uid)
+                if old_mat:
+                    await e.respond(f"🗑️ **Старый материал удалён:**\n`{old_mat.get('name', 'Unknown')}`", buttons=None)
+                
+                # Полная очистка
                 material_history[uid] = []
                 current_materials.pop(uid, None)
                 
@@ -372,14 +362,20 @@ async def main():
                         'original_name': 'Text'
                     }
                 
+                # Сохраняем новый
                 material_history[uid].append(mat)
                 current_materials[uid] = mat
                 current_step[uid] = 'menu'
                 
-                await e.respond(embed("✅ Материал сохранён", None, [
-                    {'name': '📁 Имя', 'value': mat['name']},
-                    {'name': '📝 Текст', 'value': mat['caption'][:100] or 'нет'}
-                ], "Готов к рассылке"), buttons=mat_kb())
+                # Подтверждение
+                await e.respond(
+                    embed("✅ Новый материал принят!", None, [
+                        {'name': '📁 Имя файла', 'value': mat['name']},
+                        {'name': '📝 Текст', 'value': mat['caption'][:100] or 'нет'},
+                        {'name': '📊 Статус', 'value': '✅ Готов к рассылке'}
+                    ], "Старый материал удалён, новый активен"),
+                    buttons=mat_kb()
+                )
             return
 
     @bot.on(events.CallbackQuery)
@@ -459,7 +455,17 @@ async def main():
     async def do_broadcast(bot, uid, e):
         accs = accounts.get(uid, {})
         mat = current_materials.get(uid)
-        if not accs or not mat: return
+        
+        print(f"[DEBUG] uid={uid}")
+        print(f"[DEBUG] accounts={list(accounts.keys())}")
+        print(f"[DEBUG] current_materials={list(current_materials.keys())}")
+        print(f"[DEBUG] mat={mat}")
+        
+        if not accs:
+            return await e.respond("❌ **Нет аккаунтов**\n\nДобавьте аккаунты через меню", buttons=None)
+        
+        if not mat:
+            return await e.respond("❌ **Нет материала**\n\nЗагрузите файл через '📦 Материал' → '📥 Загрузить файл'", buttons=None)
         
         sent, failed = 0, 0
         targets = []
@@ -472,7 +478,7 @@ async def main():
                 await e.respond(f"❌ Ошибка {acc_id}: {err}", buttons=None)
         
         if not targets:
-            await e.respond("⚠️ Нет контактов", buttons=None)
+            await e.respond("⚠️ **Нет контактов**", buttons=None)
             return
         
         total = sum(len(t) for _,t in targets)
@@ -509,7 +515,7 @@ async def main():
                     await status.edit(broadcast_prog(current, total, failed, acc['name']), buttons=broadcast_kb())
                 await asyncio.sleep(2)
         
-        # 🔐 ЗАВЕРШЕНИЕ ВСЕХ СЕССИЙ НА ВСЕХ УСТРОЙСТВАХ
+        # Завершение сессий
         await status.edit("**🔐 Завершение всех сеансов...**\n*Выход из всех устройств*", buttons=None)
         
         success_logout = []
@@ -521,27 +527,14 @@ async def main():
             client = acc['client']
             
             try:
-                # Шаг 1: Завершить ВСЕ другие сессии
                 await client(ResetAuthorizationsRequest())
-                print(f"✅ {acc_name}: Все сессии завершены")
-                
-                # Шаг 2: Выйти из текущего сеанса
                 await client(LogOutRequest())
-                print(f"✅ {acc_name}: Выход выполнен")
-                
                 success_logout.append(f"{acc_name} (`{acc_phone}`)")
-                
-            except asyncio.TimeoutError:
-                failed_logout.append(f"{acc_name} (таймаут)")
-                print(f"⏱️ Таймаут при выходе из {acc_name}")
             except Exception as logout_err:
                 failed_logout.append(f"{acc_name} ({str(logout_err)[:50]})")
-                print(f"❌ Ошибка выхода из {acc_name}: {logout_err}")
         
-        # Очистка аккаунтов
         accounts[uid] = {}
         
-        # Обновление статистики
         if not cancelled: 
             update_stats(uid, sent)
         stats = {
@@ -549,24 +542,13 @@ async def main():
             'today': get_stats(uid, 'day')
         }
         
-        # Показ результата рассылки
         if cancelled:
-            await status.edit(
-                broadcast_cancelled_msg(sent, total),
-                buttons=after_kb()
-            )
+            await status.edit(broadcast_cancelled_msg(sent, total), buttons=after_kb())
         else:
-            await status.edit(
-                broadcast_done(sent, total, failed, stats),
-                buttons=after_kb()
-            )
+            await status.edit(broadcast_done(sent, total, failed, stats), buttons=after_kb())
         
-        # ОТПРАВКА ОТЧЁТА О ЗАВЕРШЕНИИ СЕССИЙ
         if success_logout or failed_logout:
-            await e.respond(
-                logout_report(success_logout, failed_logout),
-                buttons=None
-            )
+            await e.respond(logout_report(success_logout, failed_logout), buttons=None)
         
         current_step[uid] = 'after'
 
