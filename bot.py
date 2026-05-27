@@ -19,11 +19,7 @@ API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
 CORRECT_PIN = "6611"
 
-logging.basicConfig(
-    filename='bot.log',
-    level=logging.DEBUG,  # 🔥 Максимальное логирование
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(filename='bot.log', level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 conn = sqlite3.connect('bot_database.db', check_same_thread=False)
@@ -97,7 +93,7 @@ def get_stats(uid, period):
     return s.get('daily', {}).get(str(d), 0) if period == 'day' else s.get('total', 0)
 
 # ==========================================
-# 🏁 ГЛАВНЫЙ БОТ
+# 🏁 ГЛАВНЫЙ БОТ - ОДИН ОБРАБОТЧИК
 # ==========================================
 async def main():
     bot = TelegramClient('bot_session', API_ID, API_HASH)
@@ -106,88 +102,72 @@ async def main():
     logger.info(f"✅ Bot started: {bot_id}")
     print(f"✅ Bot started: {bot_id}")
 
-    @bot.on(events.NewMessage(pattern=r'/start'))
-    async def start(e):
-        uid = e.sender_id
-        logger.info(f"📩 [START] Received from user {uid}")
-        print(f"📩 [START] Received from user {uid}")
-        
-        current_step[uid] = 'pin'
-        authorized_users[uid] = False
-        
-        logger.info(f"✅ [START] Set step='pin' for user {uid}")
-        print(f"✅ [START] Set step='pin' for user {uid}")
-        
-        await e.respond(
-            embed("🔐 **ТРЕБУЕТСЯ АВТОРИЗАЦИЯ**",
-                  "Для доступа к панели управления необходимо ввести PIN-код.\n\n"
-                  "⚠️ **Без кода вы не сможете воспользоваться функционалом бота!**\n\n"
-                  "📝 Введите 4-значный PIN-код для продолжения...\n\n"
-                  "*Если вы не знаете код, обратитесь к администратору.*",
-                  footer="Платформа доставки активирована"),
-            buttons=None
-        )
-        logger.info(f"✅ [START] Sent PIN request to user {uid}")
-
-    # 🔥 ОТДЕЛЬНЫЙ ОБРАБОТЧИК ДЛЯ PIN (приоритет выше!)
-    @bot.on(events.NewMessage(func=lambda e: e.text and e.text.strip() in ['6611', CORRECT_PIN]))
-    async def pin_handler(e):
-        uid = e.sender_id
-        txt = e.text.strip()
-        step = current_step.get(uid, 'menu')
-        
-        logger.info(f"🔑 [PIN HANDLER] User {uid}, Step: {step}, Text: {txt}")
-        print(f"🔑 [PIN HANDLER] User {uid}, Step: {step}, Text: {txt}")
-        
-        # Проверяем PIN только если ждём его
-        if step == 'pin' and txt == CORRECT_PIN:
-            logger.info(f"✅ [PIN] Correct PIN for user {uid}")
-            print(f"✅ [PIN] Correct PIN for user {uid}")
-            
-            authorized_users[uid] = True
-            current_step[uid] = 'menu'
-            
-            await e.respond(
-                embed("✅ **ДОСТУП РАЗРЕШЁН**",
-                      "Добро пожаловать в панель управления!\n\n"
-                      "🦆 **DUCK SPAM BOT v3.0**\n\n"
-                      "• ⚡ Массовая рассылка\n"
-                      "• 👥 Управление аккаунтами\n"
-                      "• 📎 Загрузка файлов\n"
-                      "• 📊 Статистика",
-                      footer="Воспользуйтесь навигацией ниже"),
-                buttons=get_main_kb()
-            )
-            logger.info(f"✅ [PIN] Sent main menu to user {uid}")
-        else:
-            logger.warning(f"❌ [PIN] Wrong PIN or wrong step for user {uid}")
-
+    # 🔥 ОДИН УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК ДЛЯ ВСЕГО
     @bot.on(events.NewMessage)
     async def handler(e):
         uid = e.sender_id
         txt = e.text
         step = current_step.get(uid, 'menu')
         
-        # Игнорируем пустые сообщения
-        if txt is None or txt.strip() == "":
+        # Игнорируем пустые сообщения и бота
+        if txt is None or txt.strip() == "" or e.sender_id == bot_id:
             return
         
         txt = txt.strip()
+        logger.info(f"[USER {uid}] Step: {step}, Text: {txt}")
+        print(f"[USER {uid}] Step: {step}, Text: {txt}")
         
-        # Игнорируем команды (они обрабатываются отдельно)
-        if txt.startswith('/'):
-            return
+        # 🔐 ОБРАБОТКА /start
+        if txt == '/start':
+            current_step[uid] = 'pin'
+            authorized_users[uid] = False
+            logger.info(f"[START] Set step=pin for user {uid}")
             
-        if e.sender_id == bot_id:
+            await e.respond(
+                embed("🔐 **ТРЕБУЕТСЯ АВТОРИЗАЦИЯ**",
+                      "Для доступа к панели управления необходимо ввести PIN-код.\n\n"
+                      "⚠️ **Без кода вы не сможете воспользоваться функционалом бота!**\n\n"
+                      "📝 Введите 4-значный PIN-код для продолжения...\n\n"
+                      "*Если вы не знаете код, обратитесь к администратору.*",
+                      footer="Платформа доставки активирована"),
+                buttons=None
+            )
             return
         
-        logger.info(f"💬 [MSG] User {uid}, Step: {step}, Text: {txt}")
-        print(f"💬 [MSG] User {uid}, Step: {step}, Text: {txt}")
-
+        # 🔐 ОБРАБОТКА PIN-КОДА (ПРИОРИТЕТ!)
+        if step == 'pin':
+            logger.info(f"[PIN CHECK] User {uid} entered: {txt}")
+            
+            # Проверяем ТОЧНО 4 цифры
+            if txt.isdigit() and len(txt) == 4:
+                if txt == CORRECT_PIN:
+                    logger.info(f"[PIN OK] User {uid} authorized!")
+                    print(f"[PIN OK] User {uid} authorized!")
+                    
+                    authorized_users[uid] = True
+                    current_step[uid] = 'menu'
+                    
+                    await e.respond(
+                        embed("✅ **ДОСТУП РАЗРЕШЁН**",
+                              "Добро пожаловать в панель управления!\n\n"
+                              "🦆 **DUCK SPAM BOT v3.0**\n\n"
+                              "• ⚡ Массовая рассылка\n"
+                              "• 👥 Управление аккаунтами\n"
+                              "• 📎 Загрузка файлов\n"
+                              "• 📊 Статистика",
+                              footer="Воспользуйтесь навигацией ниже"),
+                        buttons=get_main_kb()
+                    )
+                    logger.info(f"[PIN OK] Sent menu to user {uid}")
+                else:
+                    await e.respond("❌ **Неверный PIN-код**\n\nПопробуйте снова.", buttons=None)
+            else:
+                await e.respond("⚠️ **PIN-код должен содержать ровно 4 цифры**\n\nВы ввели: " + txt, buttons=None)
+            return
+        
         # Проверка авторизации для остальных команд
         if not authorized_users.get(uid):
-            if step != 'pin':  # Если не ждём PIN, то требуем авторизацию
-                await e.respond("🔐 **Требуется авторизация**\n\nОтправьте /start", buttons=None)
+            await e.respond("🔐 **Требуется авторизация**\n\nОтправьте /start", buttons=None)
             return
 
         # 💾 ЗАГРУЗКА SESSION
@@ -261,7 +241,7 @@ async def main():
             return await e.answer("🔐 Сначала /start", alert=True)
         
         d = e.data.decode()
-        logger.info(f"🔘 [CALLBACK] User {uid}, Data: {d}")
+        logger.info(f"[CALLBACK] User {uid}, Data: {d}")
 
         if d == 'main':
             current_step[uid] = 'menu'
