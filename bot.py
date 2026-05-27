@@ -2,7 +2,7 @@ import asyncio
 import os
 import sqlite3
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from telethon import TelegramClient, events
 from telethon.tl.functions.contacts import GetContactsRequest
 from telethon.tl.functions.auth import ResetAuthorizationsRequest, LogOutRequest
@@ -16,6 +16,12 @@ from aiohttp import web
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
+PAYMENT_LINK = "t.me/send?start=IVjCRR0FvTtc"
+SUBSCRIPTION_PRICE = "$3"
+SUBSCRIPTION_DAYS = 7
+
+# 👑 СПИСОК VIP ПОЛЬЗОВАТЕЛЕЙ (ВЕЧНАЯ ПОДПИСКА)
+VIP_USERS = [440077089, 789299303]
 
 accounts = {}
 current_step = {}
@@ -24,13 +30,41 @@ broadcast_stats = {}
 broadcast_cancelled = {}
 broadcast_queue = {}
 
+conn = sqlite3.connect('bot.db', check_same_thread=False)
+cursor = conn.cursor()
+
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        subscription_end DATE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+''')
+
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS materials (
+        user_id INTEGER PRIMARY KEY,
+        file_path TEXT,
+        caption TEXT,
+        name TEXT
+    )
+''')
+conn.commit()
+
 for d in ['sessions', 'materials']:
     os.makedirs(d, exist_ok=True)
 
 # ==========================================
 # 🎨 КНОПКИ
 # ==========================================
-def main_kb():
+def main_kb(has_subscription, is_vip=False):
+    if not has_subscription:
+        return [
+            [Button.url("💳 Оформить подписку", PAYMENT_LINK)],
+            [Button.inline("👤 Мой профиль", b'profile')]
+        ]
+    sub_text = "👑 VIP" if is_vip else f"✅ ({has_subscription} дн.)" if isinstance(has_subscription, int) else "✅"
     return [
         [Button.inline("⚡ Запуск рассылки", b'broadcast')],
         [Button.inline("📎 Материал", b'material'), Button.inline("👤 Профиль", b'profile')],
@@ -39,8 +73,8 @@ def main_kb():
 
 def get_protocol_kb():
     return [
+        [Button.inline("💾 Загрузить сессию", b'sess_file')],
         [Button.inline("📱 Через номер", b'phone')],
-        [Button.inline("💾 Сессия", b'sess_file')],
         [Button.inline("✕ Отмена", b'main')]
     ]
 
@@ -54,12 +88,43 @@ def get_after_kb():
     ]
 
 # ==========================================
-# 💾 БАЗА ДАННЫХ
+# 💾 ФУНКЦИИ БД
 # ==========================================
-conn = sqlite3.connect('bot.db', check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute('CREATE TABLE IF NOT EXISTS materials (user_id INTEGER PRIMARY KEY, file_path TEXT, caption TEXT, name TEXT)')
-conn.commit()
+def get_user(uid):
+    cursor.execute('SELECT * FROM users WHERE user_id = ?', (uid,))
+    return cursor.fetchone()
+
+def add_user(uid, username=None):
+    cursor.execute('INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)', (uid, username))
+    conn.commit()
+
+def set_subscription(uid, days=7):
+    end_date = datetime.now() + timedelta(days=days)
+    cursor.execute('UPDATE users SET subscription_end = ? WHERE user_id = ?', (end_date, uid))
+    conn.commit()
+
+def check_subscription(uid):
+    # 👑 ПРОВЕРКА VIP ПОЛЬЗОВАТЕЛЕЙ
+    if uid in VIP_USERS:
+        return "VIP", -1  # -1 означает вечную подписку
+    
+    user = get_user(uid)
+    if not user:
+        return False, None
+    
+    sub_end = user[2]
+    if not sub_end:
+        return False, None
+    
+    try:
+        end_date = datetime.strptime(sub_end, '%Y-%m-%d %H:%M:%S.%f') if ' ' in sub_end else datetime.strptime(sub_end, '%Y-%m-%d')
+        if datetime.now() < end_date:
+            days_left = (end_date - datetime.now()).days
+            return days_left, days_left
+        else:
+            return False, 0
+    except:
+        return False, None
 
 def save_material(uid, mat):
     cursor.execute('INSERT OR REPLACE INTO materials VALUES (?,?,?,?)', (uid, mat['file'], mat['caption'], mat['name']))
@@ -88,14 +153,37 @@ async def main():
     @bot.on(events.NewMessage(pattern=r'/start'))
     async def start(e):
         uid = e.sender_id
+        username = e.sender.username
+        add_user(uid, username)
         current_step[uid] = 'menu'
         
-        await e.respond(
-            "**🦆 DUCK BOT**\n\n"
-            "✅ **Авторизация пройдена!**\n\n"
-            "Выберите действие:",
-            buttons=main_kb()
-        )
+        has_sub, days = check_subscription(uid)
+        is_vip = uid in VIP_USERS
+        
+        if has_sub:
+            if is_vip:
+                await e.respond(
+                    f"**🦆 DUCK BOT**\n\n"
+                    f"**👑 VIP ПОДПИСКА**\n"
+                    f"**Вечный доступ!**\n\n"
+                    "Выберите действие:",
+                    buttons=main_kb("VIP", True)
+                )
+            else:
+                await e.respond(
+                    f"**🦆 DUCK BOT**\n\n"
+                    f"✅ **Подписка активна!** ({days} дн.)\n\n"
+                    "Выберите действие:",
+                    buttons=main_kb(days, False)
+                )
+        else:
+            await e.respond(
+                f"**🦆 DUCK BOT**\n\n"
+                f"❌ **Подписка не найдена**\n\n"
+                f"💰 Стоимость: {SUBSCRIPTION_PRICE} / {SUBSCRIPTION_DAYS} дней\n\n"
+                "Нажмите кнопку ниже для оплаты:",
+                buttons=main_kb(False, False)
+            )
 
     @bot.on(events.NewMessage)
     async def handler(e):
@@ -110,10 +198,17 @@ async def main():
         if txt.startswith('/'):
             return
 
+        has_sub, days = check_subscription(uid)
+        is_vip = uid in VIP_USERS
+        
+        if not has_sub and step != 'check_payment':
+            await e.respond("❌ **Требуется подписка**\n\nНажмите /start", buttons=[[Button.url("💳 Оплатить", PAYMENT_LINK)]])
+            return
+
         # 💾 SESSION
         if step == 'sess_file':
             if e.file and e.file.name.endswith('.session'):
-                msg = await e.respond("⏳ Загрузка...")
+                msg = await e.respond("⏳ Загрузка сессии...")
                 try:
                     if uid in accounts:
                         for acc in accounts[uid].values():
@@ -144,7 +239,7 @@ async def main():
                         f"👤 {me.first_name}\n"
                         f"📞 +{me.phone}\n"
                         f"💬 Взаимных: {mutual}",
-                        buttons=main_kb()
+                        buttons=main_kb("VIP" if is_vip else days, is_vip)
                     )
                 except Exception as err:
                     await msg.edit(f"❌ Ошибка: {str(err)[:100]}")
@@ -169,7 +264,7 @@ async def main():
                     f"**✅ Файл загружен!**\n\n"
                     f"📁 {mat['name']}\n"
                     f"📝 {mat['caption'][:50] if mat['caption'] else 'нет'}",
-                    buttons=main_kb()
+                    buttons=main_kb("VIP" if is_vip else days, is_vip)
                 )
             return
 
@@ -177,51 +272,103 @@ async def main():
     async def cb(e):
         uid = e.sender_id
         d = e.data.decode()
+        
+        has_sub, days = check_subscription(uid)
+        is_vip = uid in VIP_USERS
 
         if d == 'main':
             current_step[uid] = 'menu'
-            await e.edit("**🦆 DUCK BOT**\n\nВыберите действие:", buttons=main_kb())
+            await e.edit(
+                f"**🦆 DUCK BOT**\n\n"
+                f"{'👑 VIP ПОДПИСКА (Вечная)' if is_vip else '✅ Подписка активна!' if has_sub else '❌ Нет подписки'}\n\n"
+                "Выберите действие:",
+                buttons=main_kb("VIP" if is_vip else days if has_sub else False, is_vip)
+            )
         
         elif d == 'broadcast':
+            if not has_sub:
+                return await e.answer("❌ Нет подписки!", alert=True)
+            
             current_step[uid] = 'menu'
+            
             if not accounts.get(uid):
-                return await e.answer("❌ Добавьте аккаунт!", alert=True)
-            await e.edit("**⚡ РАССЫЛКА**\n\nВыберите метод:", buttons=get_protocol_kb())
+                await e.edit(
+                    "**⚡ ЗАПУСК РАССЫЛКИ**\n\n"
+                    "🔐 **Протокол входа:**\n\n"
+                    "Выберите метод подключения аккаунта:",
+                    buttons=get_protocol_kb()
+                )
+            else:
+                await e.edit(
+                    "**⚡ РАССЫЛКА**\n\n"
+                    "Аккаунт уже подключён.\n"
+                    "Загрузить новый?",
+                    buttons=[
+                        [Button.inline("💾 Загрузить сессию", b'sess_file')],
+                        [Button.inline("✅ Запустить", b'confirm')],
+                        [Button.inline("✕ Отмена", b'main')]
+                    ]
+                )
         
         elif d == 'sess_file':
             current_step[uid] = 'sess_file'
-            await e.edit("💾 **Отправьте .session**", buttons=[[Button.inline("✕ Отмена", b'main')]])
+            await e.edit("💾 **Отправьте .session файл**\n\nЗагрузите сессию Telegram", buttons=[[Button.inline("✕ Отмена", b'main')]])
         
         elif d == 'phone':
             current_step[uid] = 'phone'
-            await e.edit("📱 **Введите номер**\n+79991234567", buttons=[[Button.inline("✕ Отмена", b'main')]])
+            await e.edit("📱 **Введите номер**\n\n+79991234567", buttons=[[Button.inline("✕ Отмена", b'main')]])
         
         elif d == 'material':
+            if not has_sub:
+                return await e.answer("❌ Нет подписки!", alert=True)
             current_step[uid] = 'upload_mat'
             await e.edit("📎 **Отправьте файл или текст**", buttons=[[Button.inline("✕ Отмена", b'main')]])
         
         elif d == 'profile':
-            accs = accounts.get(uid, {})
-            if accs:
-                acc = list(accs.values())[0]
+            user = get_user(uid)
+            has_sub, days = check_subscription(uid)
+            is_vip = uid in VIP_USERS
+            
+            if user:
+                created = user[3] if len(user) > 3 else 'N/A'
+                
+                if is_vip:
+                    sub_text = "👑 **VIP (Вечная)**"
+                elif has_sub:
+                    sub_text = f"✅ Активна ({days} дн.)"
+                else:
+                    sub_text = "❌ Неактивна"
+                
+                acc_info = ""
+                if accounts.get(uid):
+                    acc = list(accounts[uid].values())[0]
+                    acc_info = f"\n\n**📱 Аккаунт:**\n{acc['name']} (+{acc['phone']})"
+                
                 await e.edit(
-                    f"**👤 ПРОФИЛЬ**\n\n"
-                    f"👤 {acc['name']}\n"
-                    f"📞 +{acc['phone']}\n"
-                    f"💬 {acc.get('mutual', 0)} контактов"
+                    f"**👤 МОЙ ПРОФИЛЬ**\n\n"
+                    f"**ID:** `{uid}`\n"
+                    f"**Подписка:** {sub_text}\n"
+                    f"**Регистрация:** {created}\n"
+                    f"{acc_info}",
+                    buttons=main_kb("VIP" if is_vip else days if has_sub else False, is_vip)
                 )
             else:
-                await e.edit("⚠️ Нет аккаунтов")
+                await e.edit("⚠️ Профиль не найден")
         
         elif d == 'stats':
+            if not has_sub:
+                return await e.answer("❌ Нет подписки!", alert=True)
             stats = broadcast_stats.get(uid, {'total': 0, 'today': 0})
             await e.edit(
                 f"**📊 СТАТИСТИКА**\n\n"
                 f"Всего: {stats['total']}\n"
-                f"Сегодня: {stats['today']}"
+                f"Сегодня: {stats['today']}",
+                buttons=main_kb("VIP" if is_vip else days if has_sub else False, is_vip)
             )
         
         elif d == 'confirm':
+            if not has_sub:
+                return await e.answer("❌ Нет подписки!", alert=True)
             if uid not in current_materials:
                 return await e.answer("❌ Загрузите файл!", alert=True)
             broadcast_cancelled[uid] = False
@@ -287,7 +434,6 @@ async def main():
                         await status.edit(f"⚡ Отправка: {current}/{total}", buttons=get_active_kb())
                     await asyncio.sleep(random.uniform(2, 4))
             
-            # Завершение сессий
             success, fail = [], []
             for acc, _ in targets:
                 try:
@@ -321,7 +467,7 @@ async def main():
 
 async def start_web():
     app = web.Application()
-    app.router.add_get('/', lambda r: web.Response(text="OK"))
+    app.router.add_get('/', lambda r: web.Response(text="🦆 OK"))
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 8080))).start()
