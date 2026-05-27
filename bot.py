@@ -1,6 +1,5 @@
 import asyncio
 import os
-import traceback
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -32,13 +31,82 @@ for d in ['sessions', 'materials']:
     os.makedirs(d, exist_ok=True)
 
 # ==========================================
+# 🎨 DISCORD СТИЛЬ И ФОРМАТИРОВАНИЕ
+# ==========================================
+def discord_embed(title, description, fields=None, footer=None, color="🟦"):
+    """Создаёт красивое сообщение в стиле Discord"""
+    text = f"{color} **{title}**\n"
+    text += "━━━━━━━━━━━━━━━━━━━━\n\n"
+    if description:
+        text += f"{description}\n\n"
+    if fields:
+        for field in fields:
+            text += f"**{field['name']}**\n{field['value']}\n"
+    if footer:
+        text += f"\n━━━━━━━━━━━━━━━━━━━━\n*{footer}*"
+    return text
+
+def format_acc_info(acc):
+    """Информация об аккаунте в Discord стиле"""
+    fields = [
+        {'name': '👤 Профиль', 'value': f"@{acc.get('username', 'нет')}"},
+        {'name': '📞 Номер', 'value': f"+{acc.get('phone', 'нет')}"},
+        {'name': '💬 Всего контактов', 'value': str(acc.get('total', 0))},
+        {'name': '✅ Взаимных контактов', 'value': str(acc.get('mutual', 0))},
+        {'name': '⚡️ Статус', 'value': '🟢 Подключение стабильно'}
+    ]
+    return discord_embed(
+        "✅ Синхронизация завершена!",
+        "Аккаунт успешно подключён к системе",
+        fields=fields,
+        footer="Инициализация потока доставки..."
+    )
+
+def broadcast_progress(sent, total, failed, acc_name, mutual_count):
+    """Прогресс рассылки в Discord стиле"""
+    percentage = int((sent / total) * 100) if total > 0 else 0
+    progress_bar = "█" * (percentage // 10) + "░" * (10 - percentage // 10)
+    
+    fields = [
+        {'name': '📊 Прогресс', 'value': f"{progress_bar} {percentage}%"},
+        {'name': '✅ Отправлено', 'value': f"{sent}/{total}"},
+        {'name': '❌ Ошибок', 'value': str(failed)},
+        {'name': '👤 Аккаунт', 'value': acc_name},
+        {'name': '📞 Взаимных контактов', 'value': str(mutual_count)}
+    ]
+    
+    return discord_embed(
+        "🚀 Рассылка активна",
+        "Идёт отправка сообщений контактам",
+        fields=fields,
+        footer="Доставка инициирована..."
+    )
+
+def broadcast_result(sent, total, failed, stats):
+    """Результат рассылки"""
+    fields = [
+        {'name': '✅ Успешно', 'value': str(sent)},
+        {'name': '❌ Ошибок', 'value': str(failed)},
+        {'name': '📊 Всего отправлено', 'value': str(stats.get('total', 0))},
+        {'name': '📅 Сегодня', 'value': str(stats.get('today', 0))},
+        {'name': '📅 За всё время', 'value': f"{stats.get('broadcasts', 0)} рассылок"}
+    ]
+    return discord_embed(
+        "✅ Рассылка завершена!",
+        "Все сообщения обработаны",
+        fields=fields,
+        footer="Сессии автоматически удалены"
+    )
+
+# ==========================================
 # 🎨 КНОПКИ
 # ==========================================
 def main_kb():
     return [
         [Button.inline("🚀 Запустить рассылку", b'broadcast')],
         [Button.inline("👥 Аккаунты", b'accounts'), Button.inline("📦 Материал", b'material')],
-        [Button.inline("📈 Статистика", b'stats')]
+        [Button.inline("📈 Статистика", b'stats')],
+        [Button.inline("⚙️ Настройки", b'settings')]
     ]
 
 def acc_kb():
@@ -48,7 +116,10 @@ def acc_kb():
     ]
 
 def mat_kb():
-    return [[Button.inline("📥 Загрузить", b'upload_mat')], [Button.inline("🔙 Назад", b'main')]]
+    return [
+        [Button.inline("📥 Загрузить материал", b'upload_mat')],
+        [Button.inline("🔙 Назад", b'main')]
+    ]
 
 def stats_kb():
     return [
@@ -56,9 +127,18 @@ def stats_kb():
         [Button.inline("📅 Месяц", b'stats_month'), Button.inline("🔙 Назад", b'main')]
     ]
 
-def confirm_kb(): return [[Button.inline("✅ Да", b'confirm'), Button.inline("❌ Нет", b'main')]]
-def after_kb(): return [[Button.inline("🔁 Повтор", b'repeat'), Button.inline("🏠 Меню", b'main')]]
-def cancel_kb(): return [[Button.inline("❌ Отмена", b'cancel')]]
+def confirm_kb(): 
+    return [[Button.inline("✅ Подтвердить", b'confirm'), Button.inline("❌ Отмена", b'main')]]
+
+def after_kb(): 
+    return [
+        [Button.inline("🔁 Повторить", b'repeat'), Button.inline("📥 Новый материал", b'new_mat')],
+        [Button.inline("➕ Добавить аккаунт", b'accounts'), Button.inline("🏠 Меню", b'main')]
+    ]
+
+def cancel_kb(): 
+    return [[Button.inline("❌ Отмена", b'cancel')]]
+
 def acc_info_kb():
     return [
         [Button.inline("🚀 Запустить рассылку", b'broadcast')],
@@ -69,14 +149,6 @@ def acc_info_kb():
 # ==========================================
 # 🔧 ФУНКЦИИ
 # ==========================================
-def format_acc_info(acc):
-    return (f"**✅ Синхронизация завершена!**\n\n"
-            f"**👤 Профиль:** @{acc.get('username', 'нет')}\n"
-            f"**📞 Номер:** {acc.get('phone', 'нет')}\n"
-            f"**💬 Всего контактов:** {acc.get('total', 0)}\n"
-            f"**✅ Взаимных:** {acc.get('mutual', 0)}\n"
-            f"**⚡️ Статус:** Подключен")
-
 def get_stats(uid, period):
     s = broadcast_stats.get(uid, {})
     d = datetime.now().date()
@@ -86,26 +158,22 @@ def get_stats(uid, period):
     return s.get('total', 0)
 
 def update_stats(uid, count):
-    broadcast_stats.setdefault(uid, {'total': 0, 'daily': {}})
+    broadcast_stats.setdefault(uid, {'total': 0, 'daily': {}, 'broadcasts': 0})
     today = str(datetime.now().date())
     broadcast_stats[uid]['total'] += count
+    broadcast_stats[uid]['broadcasts'] += 1
     broadcast_stats[uid]['daily'][today] = broadcast_stats[uid]['daily'].get(today, 0) + count
 
 def clear_user_data(uid):
-    """Очистка данных пользователя"""
-    print(f"🧹 [USER {uid}] Очистка данных...")
     if uid in accounts:
         for acc_id, acc_data in list(accounts[uid].items()):
             try:
                 if acc_data.get('client'):
                     asyncio.create_task(acc_data['client'].disconnect())
-                    print(f"  ❌ [USER {uid}] Отключен аккаунт {acc_id}")
-            except Exception as e:
-                print(f"  ⚠️ [USER {uid}] Ошибка отключения {acc_id}: {e}")
+            except: pass
     accounts[uid] = {}
     current_step[uid] = 'menu'
     current_materials.pop(uid, None)
-    print(f"  ✅ [USER {uid}] Данные очищены")
 
 # ==========================================
 # 🌐 ВЕБ-СЕРВЕР
@@ -125,16 +193,26 @@ async def main():
     bot = TelegramClient('bot_session', API_ID, API_HASH)
     await bot.start(bot_token=BOT_TOKEN)
     me = await bot.get_me()
-    print(f"✅ {me.first_name} запущен! (ID: {me.id})")
+    print(f"✅ {me.first_name} запущен!")
 
     @bot.on(events.NewMessage(pattern=r'/start'))
     async def start_cmd(e):
         uid = e.sender_id
-        print(f"📩 [USER {uid}] Команда /start")
         clear_user_data(uid)
         authorized_users[uid] = False
         current_step[uid] = 'pin'
-        await e.respond("**🔐 DUCK SPAM BOT**\n\nВведите PIN-код (4 цифры):", buttons=Button.clear())
+        await e.respond(
+            discord_embed(
+                "🔐 DUCK SPAM BOT",
+                "Система требует авторизации",
+                fields=[
+                    {'name': '📝 Действие', 'value': 'Введите 4-значный PIN-код'},
+                    {'name': '🔑 Код по умолчанию', 'value': '`6611`'}
+                ],
+                footer="Без авторизации доступ запрещён"
+            ),
+            buttons=Button.clear()
+        )
 
     @bot.on(events.NewMessage)
     async def handler(e):
@@ -144,174 +222,69 @@ async def main():
         if (txt and txt.startswith('/')) or e.sender_id == me.id:
             return
 
-        print(f"📨 [USER {uid}] Шаг: {step}, Текст: {txt[:30] if txt else 'file'}")
-
-        # 🔐 PIN
         if step == 'pin':
             if txt and txt.isdigit() and len(txt) == 4:
                 if txt == CORRECT_PIN:
                     authorized_users[uid] = True
                     current_step[uid] = 'menu'
-                    print(f"✅ [USER {uid}] Успешная авторизация")
-                    await e.respond("**✅ Доступ разрешён**\n\n**🦆 DUCK SPAM BOT**\n*Панель управления*", buttons=main_kb())
+                    await e.respond(
+                        discord_embed(
+                            "✅ ДОСТУП РАЗРЕШЁН",
+                            "Добро пожаловать в панель управления",
+                            fields=[
+                                {'name': '🦆 Бот', 'value': 'DUCK SPAM BOT v2.0'},
+                                {'name': '📊 Функции', 'value': '• Массовая рассылка\n• Управление аккаунтами\n• Загрузка файлов\n• Статистика'}
+                            ],
+                            footer="Выберите действие в меню ниже"
+                        ),
+                        buttons=main_kb()
+                    )
                 else:
-                    await e.respond("❌ Неверный PIN", buttons=Button.clear())
+                    await e.respond("❌ **Неверный PIN-код**", buttons=Button.clear())
             return
 
         if not authorized_users.get(uid):
             current_step[uid] = 'pin'
-            await e.respond("🔐 Введите /start", buttons=Button.clear())
+            await e.respond("🔐 **Введите /start** для авторизации", buttons=Button.clear())
             return
 
-        # 📱 НОМЕР
-        if step == 'phone':
-            if txt and txt.startswith('+') and txt[1:].isdigit():
-                current_step[uid] = 'code'
-                client = TelegramClient(f'acc_{uid}_{len(accounts.get(uid,{}))}', API_ID, API_HASH)
-                await client.connect()
-                await client.send_code_request(txt)
-                accounts.setdefault(uid, {})[f'a{len(accounts[uid])+1}'] = {'client': client, 'phone': txt}
-                await e.respond(f"📨 Код отправлен на `{txt}`", buttons=cancel_kb())
-            return
-
-        # 🔢 КОД
-        if step == 'code':
-            if txt and txt.isdigit() and 4 <= len(txt) <= 6:
-                accs = accounts.get(uid, {})
-                if not accs: return
-                last = list(accs.values())[-1]
-                try:
-                    await last['client'].sign_in(last['phone'], txt)
-                    me_acc = await last['client'].get_me()
-                    contacts = await last['client'](GetContactsRequest(0))
-                    total = len([u for u in contacts.users if not u.bot])
-                    mutual = len([u for u in contacts.users if u.mutual_contact and not u.bot])
-                    last.update({'client': last['client'], 'phone': me_acc.phone, 'name': me_acc.first_name,
-                                 'username': me_acc.username or 'нет', 'total': total, 'mutual': mutual})
-                    current_step[uid] = 'menu'
-                    await e.respond(format_acc_info(last), buttons=acc_info_kb())
-                    print(f"✅ [USER {uid}] Аккаунт добавлен: {me_acc.first_name}")
-                except Exception as err:
-                    print(f"❌ [USER {uid}] Ошибка входа по коду: {err}")
-                    traceback.print_exc()
-                    await e.respond(f"❌ Ошибка: {err}", buttons=Button.clear())
-            return
-
-        # 💾 SESSION ФАЙЛ — ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ
+        # 💾 SESSION
         if step == 'sess_file':
             if e.file and e.file.name.endswith('.session'):
-                print(f"💾 [USER {uid}] Получен session файл: {e.file.name}")
                 clear_user_data(uid)
-                
-                msg = await e.respond("⏳ **Загрузка session файла...**\n*Старые сессии удалены*", buttons=Button.clear())
-                
+                msg = await e.respond(
+                    discord_embed(
+                        "⏳ Загрузка session...",
+                        "Инициализация подключения",
+                        fields=[{'name': '📁 Файл', 'value': e.file.name}],
+                        footer="Старые сессии удалены"
+                    ),
+                    buttons=Button.clear()
+                )
                 try:
-                    # Шаг 1: Скачивание
-                    print(f"⏳ [USER {uid}] Шаг 1: Скачивание файла...")
-                    await msg.edit("⏳ **Шаг 1/4: Скачивание файла...**")
-                    session_path = await e.download_media(
-                        file=f"sessions/acc_{uid}_new.session"
-                    )
-                    print(f"✅ [USER {uid}] Файл скачан: {session_path}")
-                    
-                    # Шаг 2: Подключение
-                    print(f"🔄 [USER {uid}] Шаг 2: Подключение к сессии...")
-                    await msg.edit("🔄 **Шаг 2/4: Подключение к сессии...**")
-                    session_name = session_path.replace('.session', '')
-                    client = TelegramClient(session_name, API_ID, API_HASH)
-                    
-                    try:
-                        await asyncio.wait_for(client.connect(), timeout=10.0)
-                        print(f"✅ [USER {uid}] Сессия подключена")
-                    except asyncio.TimeoutError:
-                        raise Exception("⏱️ Превышено время подключения. Сессия может быть недействительна.")
-                    except Exception as conn_err:
-                        raise Exception(f"❌ Ошибка подключения: {conn_err}")
-                    
-                    # Шаг 3: Получение информации
-                    print(f"📱 [USER {uid}] Шаг 3: Получение информации об аккаунте...")
-                    await msg.edit("📱 **Шаг 3/4: Получение информации...**")
-                    try:
-                        me_acc = await asyncio.wait_for(client.get_me(), timeout=10.0)
-                        print(f"✅ [USER {uid}] Информация получена: {me_acc.first_name}")
-                    except asyncio.TimeoutError:
-                        raise Exception("⏱️ Превышено время получения информации.")
-                    
-                    # Шаг 4: Подсчёт контактов
-                    print(f"📊 [USER {uid}] Шаг 4: Подсчёт контактов...")
-                    await msg.edit("📊 **Шаг 4/4: Подсчёт контактов...**")
-                    try:
-                        contacts = await asyncio.wait_for(client(GetContactsRequest(0)), timeout=15.0)
-                        total = len([u for u in contacts.users if not u.bot])
-                        mutual = len([u for u in contacts.users if u.mutual_contact and not u.bot])
-                        print(f"✅ [USER {uid}] Контактов: {total}, Взаимных: {mutual}")
-                    except asyncio.TimeoutError:
-                        total = 0
-                        mutual = 0
-                        print(f"⚠️ [USER {uid}] Таймаут при подсчёте контактов")
-                    except Exception as e:
-                        total = 0
-                        mutual = 0
-                        print(f"⚠️ [USER {uid}] Ошибка подсчёта контактов: {e}")
-                    
-                    # Сохранение аккаунта
-                    accounts.setdefault(uid, {})['active'] = {
-                        'client': client, 
-                        'phone': me_acc.phone, 
-                        'name': me_acc.first_name or 'Без имени',
-                        'username': me_acc.username or 'нет', 
-                        'total': total, 
-                        'mutual': mutual
-                    }
-                    
-                    current_step[uid] = 'menu'
-                    print(f"✅ [USER {uid}] Session успешно загружена!")
-                    
-                    await msg.edit(
-                        format_acc_info(accounts[uid]['active']), 
-                        buttons=acc_info_kb()
-                    )
-                    
-                except Exception as err:
-                    error_trace = traceback.format_exc()
-                    print(f"❌ [USER {uid}] КРИТИЧЕСКАЯ ОШИБКА:\n{error_trace}")
-                    error_msg = str(err)[:300]
-                    await msg.edit(
-                        f"**❌ ОШИБКА ЗАГРУЗКИ SESSION!**\n\n"
-                        f"**Детали:**\n`{error_msg}`\n\n"
-                        f"Возможные причины:\n"
-                        f"• Сессия устарела или недействительна\n"
-                        f"• Неверный API_ID или API_HASH\n"
-                        f"• Проблемы с сетью\n\n"
-                        f"Попробуйте другую сессию.",
-                        buttons=Button.clear()
-                    )
-            return
-
-        # 🔑 STRING
-        if step == 'sess_str':
-            if txt and txt.startswith('1') and len(txt) > 100:
-                print(f"🔑 [USER {uid}] Получен session string")
-                clear_user_data(uid)
-                
-                msg = await e.respond("🔄 **Подключение...**", buttons=Button.clear())
-                try:
-                    client = TelegramClient(StringSession(txt), API_ID, API_HASH)
+                    session_path = await e.download_media(file=f"sessions/acc_{uid}_new.session")
+                    client = TelegramClient(session_path.replace('.session', ''), API_ID, API_HASH)
                     await client.connect()
                     me_acc = await client.get_me()
-                    contacts = await client(GetContactsRequest(0))
-                    total = len([u for u in contacts.users if not u.bot])
-                    mutual = len([u for u in contacts.users if u.mutual_contact and not u.bot])
+                    
+                    try:
+                        contacts = await client(GetContactsRequest(0))
+                        total = len([u for u in contacts.users if not u.bot])
+                        mutual = len([u for u in contacts.users if u.mutual_contact and not u.bot])
+                    except:
+                        total, mutual = 0, 0
                     
                     accounts.setdefault(uid, {})['active'] = {
-                        'client': client, 'phone': me_acc.phone, 'name': me_acc.first_name,
+                        'client': client, 'phone': me_acc.phone, 'name': me_acc.first_name or 'Без имени',
                         'username': me_acc.username or 'нет', 'total': total, 'mutual': mutual}
                     current_step[uid] = 'menu'
-                    await msg.edit(format_acc_info(accounts[uid]['active']), buttons=acc_info_kb())
-                    print(f"✅ [USER {uid}] String загружен: {me_acc.first_name}")
+                    
+                    await msg.edit(
+                        format_acc_info(accounts[uid]['active']),
+                        buttons=acc_info_kb()
+                    )
                 except Exception as err:
-                    print(f"❌ [USER {uid}] Ошибка string: {err}")
-                    await msg.edit(f"❌ Ошибка: {err}", buttons=Button.clear())
+                    await msg.edit(f"❌ **Ошибка:** {str(err)[:200]}", buttons=Button.clear())
             return
 
         # 📥 МАТЕРИАЛ
@@ -320,22 +293,36 @@ async def main():
                 original_name = e.file.name
                 path = await e.download_media(file=f"materials/mat_{uid}_{original_name}")
                 cap = txt or ''
-                mat = {
-                    'file': path, 
-                    'caption': cap, 
-                    'name': original_name,
-                    'original_name': original_name
-                }
+                mat = {'file': path, 'caption': cap, 'name': original_name, 'original_name': original_name}
                 material_history.setdefault(uid, []).append(mat)
                 current_materials[uid] = mat
                 current_step[uid] = 'menu'
-                await e.respond(f"**✅ Сохранено:** {original_name}\n📝 Текст: {cap[:50] or 'нет'}", buttons=mat_kb())
+                await e.respond(
+                    discord_embed(
+                        "✅ Материал сохранён",
+                        "Файл успешно загружен",
+                        fields=[
+                            {'name': '📁 Имя файла', 'value': original_name},
+                            {'name': '📝 Текст', 'value': cap[:100] or 'нет'}
+                        ],
+                        footer="Готов к рассылке"
+                    ),
+                    buttons=mat_kb()
+                )
             elif txt:
                 mat = {'file': None, 'caption': txt, 'name': 'Text', 'original_name': 'Text'}
                 material_history.setdefault(uid, []).append(mat)
                 current_materials[uid] = mat
                 current_step[uid] = 'menu'
-                await e.respond(f"**✅ Текст сохранён**\n📝 {txt[:100]}", buttons=mat_kb())
+                await e.respond(
+                    discord_embed(
+                        "✅ Текст сохранён",
+                        "Текстовый материал готов",
+                        fields=[{'name': '📝 Содержание', 'value': txt[:200]}],
+                        footer="Готов к рассылке"
+                    ),
+                    buttons=mat_kb()
+                )
             return
 
     @bot.on(events.CallbackQuery)
@@ -345,97 +332,157 @@ async def main():
             return await e.answer("🔐 Введите /start", alert=True)
         
         d = e.data.decode()
-        print(f"🔘 [USER {uid}] Callback: {d}")
 
         if d == 'main':
-            current_step[uid] = 'menu'
-            await e.edit("**🦆 DUCK SPAM BOT**\n*Панель*", buttons=main_kb())
+            await e.edit(
+                discord_embed(
+                    "🦆 DUCK SPAM BOT",
+                    "Панель управления",
+                    footer="Выберите действие"
+                ),
+                buttons=main_kb()
+            )
         elif d == 'accounts':
             accs = accounts.get(uid, {})
-            txt = f"**👥 Аккаунты:** {len(accs)}\n\n"
-            for i, a in enumerate(accs.values(), 1): txt += f"{i}. {a['name']} ({a.get('mutual',0)} вз.)\n"
-            await e.edit(txt or "*Пусто*", buttons=acc_kb())
+            fields = []
+            if accs:
+                for i, a in enumerate(accs.values(), 1):
+                    fields.append({'name': f'👤 Аккаунт {i}', 'value': f"{a['name']} | {a.get('mutual',0)} вз."})
+            else:
+                fields = [{'name': '⚠️', 'value': 'Аккаунты не добавлены'}]
+            await e.edit(
+                discord_embed("👥 Управление аккаунтами", f"Всего: {len(accs)}", fields=fields),
+                buttons=acc_kb()
+            )
         elif d == 'material':
             mats = material_history.get(uid, [])
-            txt = f"**📦 Материалы:** {len(mats)}\n"
-            if current_materials.get(uid): txt += f"📎 Активен: {current_materials[uid]['name']}"
-            await e.edit(txt or "*Пусто*", buttons=mat_kb())
+            fields = []
+            if current_materials.get(uid):
+                fields.append({'name': '📎 Активный материал', 'value': current_materials[uid]['name']})
+            else:
+                fields.append({'name': '⚠️', 'value': 'Материал не загружен'})
+            await e.edit(
+                discord_embed("📦 Материалы", f"Всего: {len(mats)}", fields=fields),
+                buttons=mat_kb()
+            )
         elif d == 'stats':
             t = broadcast_stats.get(uid, {}).get('total', 0)
-            await e.edit(f"**📈 Статистика**\n📊 Всего: {t}\n📅 Сегодня: {get_stats(uid,'day')}\n📅 Неделя: {get_stats(uid,'week')}\n📅 Месяц: {get_stats(uid,'month')}", buttons=stats_kb())
-        elif d.startswith('stats_'):
-            p = d.split('_')[1]
-            await e.answer(f"📅 {p.capitalize()}: {get_stats(uid, p)}", alert=True)
-        elif d == 'phone': current_step[uid]='phone'; await e.edit("**📱 Номер:** (+7...)", buttons=cancel_kb())
-        elif d == 'sess_file': current_step[uid]='sess_file'; await e.edit("**💾 Отправьте .session**\n*⚠️ Старая сессия будет удалена*", buttons=cancel_kb())
-        elif d == 'sess_str': current_step[uid]='sess_str'; await e.edit("**🔑 Введите String**\n*⚠️ Старая сессия будет удалена*", buttons=cancel_kb())
-        elif d == 'upload_mat': current_step[uid]='upload_mat'; await e.edit("**📥 Файл или текст**", buttons=cancel_kb())
+            await e.edit(
+                discord_embed(
+                    "📈 Статистика",
+                    "Общая информация",
+                    fields=[
+                        {'name': '📊 Всего отправлено', 'value': str(t)},
+                        {'name': '📅 Сегодня', 'value': str(get_stats(uid,'day'))},
+                        {'name': '📅 За неделю', 'value': str(get_stats(uid,'week'))},
+                        {'name': '📅 За месяц', 'value': str(get_stats(uid,'month'))},
+                        {'name': '🔄 Всего рассылок', 'value': str(broadcast_stats.get(uid, {}).get('broadcasts', 0))}
+                    ]
+                ),
+                buttons=stats_kb()
+            )
+        elif d == 'phone': 
+            current_step[uid]='phone'
+            await e.edit("**📱 Введите номер**\n\nФормат: `+79991234567`", buttons=cancel_kb())
+        elif d == 'sess_file': 
+            current_step[uid]='sess_file'
+            await e.edit("**💾 Отправьте .session файл**", buttons=cancel_kb())
+        elif d == 'sess_str': 
+            current_step[uid]='sess_str'
+            await e.edit("**🔑 Введите Session String**", buttons=cancel_kb())
+        elif d == 'upload_mat': 
+            current_step[uid]='upload_mat'
+            await e.edit("**📥 Отправьте файл или текст**", buttons=cancel_kb())
         elif d == 'broadcast':
             accs = accounts.get(uid, {})
             if not accs: return await e.answer("❌ Нет аккаунтов", alert=True)
             if uid not in current_materials: return await e.answer("❌ Нет материала", alert=True)
             total_mut = sum(a.get('mutual',0) for a in accs.values())
-            txt = f"**🚀 Рассылка**\n\n"
-            for a in accs.values(): txt += f"👤 {a['name']} | 📞 {a.get('mutual',0)} вз.\n"
-            txt += f"\n📦 Материал: {current_materials[uid]['name']}\n📊 Всего контактов: {total_mut}\n\n**Запустить?**"
-            await e.edit(txt, buttons=confirm_kb())
+            fields = []
+            for a in accs.values():
+                fields.append({'name': f"👤 {a['name']}", 'value': f"📞 {a.get('mutual',0)} вз."})
+            fields.append({'name': '📦 Материал', 'value': current_materials[uid]['name']})
+            fields.append({'name': '📊 Всего контактов', 'value': str(total_mut)})
+            
+            await e.edit(
+                discord_embed("🚀 Запуск рассылки", "Параметры рассылки", fields=fields, footer="Подтвердите запуск"),
+                buttons=confirm_kb()
+            )
         elif d == 'confirm':
-            await e.edit("⏳ **Запуск...**", buttons=Button.clear())
+            await e.edit("⏳ **Инициализация...**", buttons=Button.clear())
             await do_broadcast(bot, uid, e)
         elif d == 'repeat':
             if uid in current_materials:
                 await e.edit("🔁 **Повтор...**", buttons=Button.clear())
                 await do_broadcast(bot, uid, e)
-            else: await e.answer("❌ Нет материала", alert=True)
+        elif d == 'new_mat':
+            current_step[uid]='upload_mat'
+            await e.edit("**📥 Отправьте новый материал**", buttons=cancel_kb())
         elif d == 'cancel':
             current_step[uid] = 'menu'
-            await e.edit("**❌ Отмена**", buttons=main_kb())
+            await e.edit("**❌ Отменено**", buttons=main_kb())
         await e.answer()
 
-    # 🚀 РАССЫЛКА
     async def do_broadcast(bot, uid, e):
         accs = accounts.get(uid, {})
         mat = current_materials.get(uid)
         if not accs or not mat: return
         
         sent, failed = 0, 0
-        targets = []
-        for a in accs.values():
-            try:
-                c = await a['client'](GetContactsRequest(0))
-                targets.extend([(a, u) for u in c.users if u.mutual_contact and not u.bot])
-            except Exception as err:
-                await e.respond(f"❌ Ошибка аккаунта: {err}", buttons=Button.clear())
+        all_targets = []
         
-        if not targets:
-            await e.respond("⚠️ Нет взаимных контактов", buttons=Button.clear())
+        for acc_id, acc_data in accs.items():
+            try:
+                c = await acc_data['client'](GetContactsRequest(0))
+                targets = [u for u in c.users if u.mutual_contact and not u.bot]
+                all_targets.append((acc_data, targets))
+            except Exception as err:
+                await e.respond(f"❌ Ошибка: {err}", buttons=Button.clear())
+        
+        if not all_targets:
+            await e.respond("⚠️ **Нет контактов**", buttons=Button.clear())
             return
         
-        total = len(targets)
-        status_msg = await e.respond(f"**🚀 Рассылка запущена**\n📊 Прогресс: 0/{total}", buttons=Button.clear())
+        total_contacts = sum(len(t) for _, t in all_targets)
+        status_msg = await e.respond(
+            broadcast_progress(0, total_contacts, 0, "Инициализация", total_contacts),
+            buttons=Button.clear()
+        )
         
-        for acc, user in targets:
-            try:
-                if mat['file']:
-                    original_name = mat.get('original_name', mat.get('name', 'file'))
-                    await acc['client'].send_file(
-                        user.id, 
-                        mat['file'], 
-                        caption=mat['caption'],
-                        attributes=[DocumentAttributeFilename(file_name=original_name)]
+        current = 0
+        for acc_data, targets in all_targets:
+            for user in targets:
+                try:
+                    if mat['file']:
+                        await acc_data['client'].send_file(
+                            user.id, mat['file'], caption=mat['caption'],
+                            attributes=[DocumentAttributeFilename(file_name=mat.get('original_name', 'file'))]
+                        )
+                    else:
+                        await acc_data['client'].send_message(user.id, mat['caption'])
+                    sent += 1
+                except: 
+                    failed += 1
+                
+                current += 1
+                if current % 10 == 0:
+                    await status_msg.edit(
+                        broadcast_progress(current, total_contacts, failed, acc_data['name'], len(targets)),
+                        buttons=Button.clear()
                     )
-                else:
-                    await acc['client'].send_message(user.id, mat['caption'])
-                sent += 1
-            except: 
-                failed += 1
-            
-            if sent % 10 == 0:
-                await status_msg.edit(f"**🚀 Рассылка**\n✅ Отправлено: {sent}/{total}\n❌ Ошибок: {failed}", buttons=Button.clear())
-            await asyncio.sleep(2)
+                await asyncio.sleep(2)
         
         update_stats(uid, sent)
-        await status_msg.edit(f"**✅ Готово!**\n✅ Успешно: {sent}\n❌ Ошибок: {failed}\n📊 Всего: {broadcast_stats[uid]['total']}", buttons=after_kb())
+        stats = {
+            'total': broadcast_stats[uid]['total'],
+            'today': get_stats(uid, 'day'),
+            'broadcasts': broadcast_stats[uid].get('broadcasts', 0)
+        }
+        
+        await status_msg.edit(
+            broadcast_result(sent, total_contacts, failed, stats),
+            buttons=after_kb()
+        )
         current_step[uid] = 'after'
 
     await bot.run_until_disconnected()
