@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from telethon import TelegramClient, events
 from telethon.tl.functions.contacts import GetContactsRequest
 from telethon.tl.functions.auth import ResetAuthorizationsRequest, LogOutRequest
-from telethon.tl.types import DocumentAttributeFilename
+from telethon.tl.types import DocumentAttributeFilename, MessageMediaPhoto
 from telethon.tl.custom import Button
 from aiohttp import web
 
@@ -40,7 +40,7 @@ VIP_USERS = [440077089, 789299303, ADMIN_ID]
 conn = sqlite3.connect('bot.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, subscription_end TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS materials (user_id INTEGER PRIMARY KEY, file_path TEXT, caption TEXT, name TEXT)''')
+cursor.execute('''CREATE TABLE IF NOT EXISTS materials (user_id INTEGER PRIMARY KEY, file_path TEXT, caption TEXT, name TEXT, photo_file_id TEXT)''')
 conn.commit()
 
 accounts = {}
@@ -87,7 +87,8 @@ def check_subscription(uid):
         return False, None
 
 def save_material(uid, mat):
-    cursor.execute('INSERT OR REPLACE INTO materials VALUES (?,?,?,?)', (uid, mat['file'], mat['caption'], mat['name']))
+    cursor.execute('INSERT OR REPLACE INTO materials (user_id, file_path, caption, name, photo_file_id) VALUES (?,?,?,?,?)', 
+                   (uid, mat.get('file'), mat.get('caption'), mat.get('name'), mat.get('photo_file_id')))
     conn.commit()
 
 def update_stats(uid, count):
@@ -96,24 +97,32 @@ def update_stats(uid, count):
     broadcast_stats[uid]['today'] += count
 
 def get_all_users():
-    cursor.execute('SELECT user_id FROM users')
-    return [row[0] for row in cursor.fetchall()]
+    """Получить ВСЕХ пользователей кто запускал бота"""
+    cursor.execute('SELECT DISTINCT user_id FROM users')
+    users = [row[0] for row in cursor.fetchall()]
+    logger.info(f"📊 Found {len(users)} total users in database")
+    return users
 
 # ==========================================
 # 🎨 UI КНОПКИ
 # ==========================================
 def main_kb(has_sub, is_vip=False):
-    if not has_sub:
+    """Главное меню - доступно ВСЕМ, но функционал ограничен"""
+    if not has_sub and not is_vip:
+        # Без подписки: показываем кнопки но они будут блокироваться
         return [
             [Button.url("✍️ Написать админу", ADMIN_LINK)],
-            [Button.inline("👤 Мой профиль", b'profile')]
+            [Button.inline("👤 Мой профиль", b'profile')],
+            [Button.inline("🚀 Запуск рассылки", b'broadcast_disabled')],
+            [Button.inline("📎 Материал", b'material_disabled'), Button.inline("📊 Статистика", b'stats_disabled')]
         ]
-    sub_txt = "👑 VIP (Вечная)" if is_vip else f"✅ Активна ({has_sub} дн.)" if isinstance(has_sub, int) else "✅"
-    return [
-        [Button.inline("🚀 Запуск рассылки", b'broadcast')],
-        [Button.inline("📎 Материал", b'material'), Button.inline("👤 Профиль", b'profile')],
-        [Button.inline("📊 Статистика", b'stats')]
-    ]
+    else:
+        # С подпиской: полный доступ
+        return [
+            [Button.inline("🚀 Запуск рассылки", b'broadcast')],
+            [Button.inline("📎 Материал", b'material'), Button.inline("👤 Профиль", b'profile')],
+            [Button.inline("📊 Статистика", b'stats')]
+        ]
 
 def admin_kb():
     return [
@@ -204,21 +213,19 @@ async def main():
     @bot.on(events.NewMessage)
     async def handler(e):
         uid, txt, step = e.sender_id, e.text, current_step.get(e.sender_id, 'menu')
-        if not txt or e.sender_id == (await bot.get_me()).id or txt.startswith('/'): 
+        
+        # Игнорируем бота и команды
+        if e.sender_id == (await bot.get_me()).id or (txt and txt.startswith('/')): 
             return
-        txt = txt.strip()
-
+        
         has_sub, _ = check_subscription(uid)
-        if not has_sub and step not in ['pay_pending'] and uid != ADMIN_ID:
-            await e.respond("🔐 **Требуется подписка**\n\nНажмите /start", buttons=[[Button.url("✍️ Написать админу", ADMIN_LINK)]])
-            return
+        is_vip = uid in VIP_USERS
 
         # ОБРАБОТКА АДМИН КОМАНД
         if uid == ADMIN_ID:
             admin_s = admin_step.get(uid)
             
             if admin_s == 'grant_wait_username':
-                # Получаем username (с @ или без)
                 username = txt.strip().lstrip('@')
                 admin_step[uid] = 'grant_wait_days'
                 admin_step[f'{uid}_username'] = username
@@ -231,43 +238,56 @@ async def main():
                     username = admin_step.get(f'{uid}_username')
                     
                     if username:
-                        # Пытаемся получить пользователя по username
                         try:
                             entity = await bot.get_entity(username)
                             target_uid = entity.id
                             target_username = entity.username or username
                             
-                            # Выдаем подписку
                             set_subscription(target_uid, days)
-                            
-                            # Обновляем username в БД если есть
                             cursor.execute('UPDATE users SET username = ? WHERE user_id = ?', (target_username, target_uid))
                             conn.commit()
                             
                             await e.respond(f"✅ **Подписка выдана!**\n\n👤 Пользователь: **@{target_username}** (`{target_uid}`)\n📅 Дней: {days}")
                             
-                            # Уведомляем пользователя
                             try:
                                 await bot.send_message(target_uid, f"**✅ ВАМ ВЫДАНА ПОДПИСКА!**\n\n📅 На {days} дней\n👤 Админ: @{ADMIN_USERNAME}\n\nОтправьте /start")
-                            except:
-                                await e.respond(f"⚠️ Не удалось отправить уведомление пользователю (возможно, он не запускал бота)")
+                            except: pass
                             
                         except Exception as entity_err:
-                            await e.respond(f"❌ **Пользователь не найден!**\n\nОшибка: {str(entity_err)[:100]}\n\nПроверьте username.")
+                            await e.respond(f"❌ **Пользователь не найден!**\n\nОшибка: {str(entity_err)[:100]}")
                     
-                    # Сброс
                     admin_step[uid] = None
                     admin_step.pop(f'{uid}_username', None)
                     return
                     
                 except ValueError:
-                    await e.respond("❌ **Неверное число**\n\nВведите количество дней (число):")
+                    await e.respond("❌ **Неверное число**\n\nВведите количество дней:")
                     return
             
             if admin_s == 'broadcast_wait_text':
                 admin_step[uid] = 'broadcast_wait_photo'
                 admin_step[f'{uid}_text'] = txt
                 await e.respond("**📎 Отправьте фото (или нажмите 'Пропустить')**\n\nИли отправьте /skip_photo")
+                return
+            
+            # Обработка фото для рассылки
+            if admin_s == 'broadcast_wait_photo' and e.file:
+                try:
+                    # Сохраняем фото
+                    photo_path = await e.download_media(file=f"materials/admin_broadcast_photo.jpg")
+                    admin_step[f'{uid}_photo'] = photo_path
+                    await e.respond("**✅ Фото сохранено!**\n\nНажмите /send_broadcast для отправки")
+                    return
+                except Exception as err:
+                    await e.respond(f"❌ Ошибка сохранения фото: {err}")
+                    return
+
+        # Проверка подписки для обычных пользователей
+        if not has_sub and not is_vip and uid != ADMIN_ID:
+            # Показываем предупреждение но не блокируем полностью
+            if step in ['upload_mat', 'sess_file']:
+                await e.respond("🔐 **Требуется подписка**\n\nНажмите /start", 
+                              buttons=[[Button.url("✍️ Написать админу", ADMIN_LINK)]])
                 return
 
         if step == 'sess_file':
@@ -320,7 +340,8 @@ async def main():
                 current_materials[uid] = mat
                 current_step[uid] = 'menu'
                 save_material(uid, mat)
-                await e.respond(f"**✅ Файл загружен!**\n\n📁 {mat['name']}\n📝 {mat['caption'][:50] or 'нет'}", buttons=main_kb(has_sub, uid in VIP_USERS))
+                await e.respond(f"**✅ Файл загружен!**\n\n📁 {mat['name']}\n📝 {mat['caption'][:50] or 'нет'}", 
+                              buttons=main_kb(has_sub, is_vip))
             return
 
     @bot.on(events.NewMessage(pattern=r'/skip_photo'))
@@ -330,25 +351,49 @@ async def main():
         
         admin_s = admin_step.get(e.sender_id)
         if admin_s == 'broadcast_wait_photo':
-            text = admin_step.get(f'{e.sender_id}_text', '')
-            users = get_all_users()
-            sent_count = 0
-            failed_count = 0
-            
-            msg = await e.respond(f"**📢 Отправка рассылки...**\n\nВсего пользователей: {len(users)}")
-            
-            for user_id in users:
-                try:
+            # Очищаем фото если было
+            admin_step.pop(f'{e.sender_id}_photo', None)
+            await do_admin_broadcast(e, e.sender_id)
+
+    @bot.on(events.NewMessage(pattern=r'/send_broadcast'))
+    async def send_broadcast_cmd(e):
+        if e.sender_id != ADMIN_ID:
+            return
+        
+        admin_s = admin_step.get(e.sender_id)
+        if admin_s == 'broadcast_wait_photo':
+            await do_admin_broadcast(e, e.sender_id)
+
+    async def do_admin_broadcast(e, uid):
+        text = admin_step.get(f'{uid}_text', '')
+        photo_path = admin_step.get(f'{uid}_photo')
+        users = get_all_users()
+        
+        sent_count = 0
+        failed_count = 0
+        
+        msg = await e.respond(f"**📢 Отправка рассылки...**\n\nВсего пользователей: {len(users)}")
+        
+        for user_id in users:
+            try:
+                if photo_path:
+                    await bot.send_file(user_id, photo_path, caption=text)
+                else:
                     await bot.send_message(user_id, text)
-                    sent_count += 1
-                except Exception as send_err:
-                    failed_count += 1
-                    logger.error(f"Failed to send to {user_id}: {send_err}")
-                await asyncio.sleep(0.1)
-            
-            await msg.edit(f"**✅ Рассылка завершена!**\n\n✅ Отправлено: {sent_count}\n❌ Ошибок: {failed_count}")
-            admin_step[e.sender_id] = None
-            admin_step.pop(f'{e.sender_id}_text', None)
+                sent_count += 1
+            except Exception as send_err:
+                failed_count += 1
+                logger.error(f"Failed to send to {user_id}: {send_err}")
+            await asyncio.sleep(0.1)
+        
+        # Очистка
+        if photo_path and os.path.exists(photo_path):
+            os.remove(photo_path)
+        
+        await msg.edit(f"**✅ Рассылка завершена!**\n\n✅ Отправлено: {sent_count}\n❌ Ошибок: {failed_count}")
+        admin_step[uid] = None
+        admin_step.pop(f'{uid}_text', None)
+        admin_step.pop(f'{uid}_photo', None)
 
     @bot.on(events.CallbackQuery)
     async def cb(e):
@@ -376,8 +421,18 @@ async def main():
             admin_step[uid] = 'broadcast_wait_text'
             await e.respond("**📢 РАССЫЛКА**\n\nВведите текст сообщения:")
 
+        elif d == 'broadcast_disabled':
+            await e.answer("🔐 Требуется подписка! Напишите админу.", alert=True)
+        
+        elif d == 'material_disabled':
+            await e.answer("🔐 Требуется подписка! Напишите админу.", alert=True)
+        
+        elif d == 'stats_disabled':
+            await e.answer("🔐 Требуется подписка! Напишите админу.", alert=True)
+
         elif d == 'broadcast':
-            if not has_sub: return await e.answer("❌ Нет подписки!", alert=True)
+            if not has_sub and not is_vip: 
+                return await e.answer("❌ Нет подписки!", alert=True)
             current_step[uid] = 'menu'
             if not accounts.get(uid):
                 await e.edit("**⚡ ЗАПУСК РАССЫЛКИ**\n\n🔐 Загрузите сессию:", 
@@ -391,7 +446,8 @@ async def main():
             await e.edit("💾 **Отправьте .session файл**", buttons=[[Button.inline("🔙 Отмена", b'main')]])
 
         elif d == 'material':
-            if not has_sub: return await e.answer("❌ Нет подписки!", alert=True)
+            if not has_sub and not is_vip: 
+                return await e.answer("❌ Нет подписки!", alert=True)
             current_step[uid] = 'upload_mat'
             await e.edit("📎 **Отправьте файл или текст**", buttons=[[Button.inline("🔙 Отмена", b'main')]])
 
@@ -409,17 +465,22 @@ async def main():
                 a = accounts[uid]['active']
                 acc_txt = f"\n\n**📱 Аккаунт:**\n👤 {a['name']}\n📞 +{a['phone']}\n💬 {a['mutual']} вз."
             created = user[3] if user and len(user) > 3 else 'N/A'
-            await e.edit(f"**👤 ПРОФИЛЬ**\n\n**ID:** `{uid}`\n**Подписка:** {sub_txt}\n**Регистрация:** {created}\n{acc_txt}", 
-                buttons=admin_kb() if uid == ADMIN_ID else main_kb(has_sub, is_vip))
+            
+            kb = admin_kb() if uid == ADMIN_ID else main_kb(has_sub, is_vip)
+            await e.edit(f"**👤 ПРОФИЛЬ**\n\n**ID:** `{uid}`\n**Подписка:** {sub_txt}\n**Регистрация:** {created}\n{acc_txt}", buttons=kb)
 
         elif d == 'stats':
-            if not has_sub and uid != ADMIN_ID: return await e.answer("❌ Нет подписки!", alert=True)
+            if not has_sub and not is_vip and uid != ADMIN_ID: 
+                return await e.answer("❌ Нет подписки!", alert=True)
             s = broadcast_stats.get(uid, {'total': 0, 'today': 0})
             await e.edit(f"**📊 СТАТИСТИКА**\n\nВсего: {s['total']}\nСегодня: {s['today']}", 
                 buttons=admin_kb() if uid == ADMIN_ID else main_kb(has_sub, is_vip))
 
         elif d == 'confirm':
-            if not has_sub or uid not in current_materials: return await e.answer("❌ Нет подписки или материала!", alert=True)
+            if not has_sub and not is_vip: 
+                return await e.answer("❌ Нет подписки!", alert=True)
+            if uid not in current_materials: 
+                return await e.answer("❌ Загрузите материал!", alert=True)
             broadcast_cancelled[uid] = False
             await e.edit("⏳ **Запуск...**", buttons=None)
             asyncio.create_task(do_broadcast(bot, uid, e))
@@ -460,8 +521,10 @@ async def main():
             for user in targets:
                 if broadcast_cancelled.get(uid): cancelled = True; break
                 try:
-                    if mat['file']: await acc_data['client'].send_file(user.id, mat['file'], caption=mat['caption'])
-                    else: await acc_data['client'].send_message(user.id, mat['caption'])
+                    if mat['file']: 
+                        await acc_data['client'].send_file(user.id, mat['file'], caption=mat['caption'])
+                    else: 
+                        await acc_data['client'].send_message(user.id, mat['caption'])
                     sent += 1
                 except: failed += 1
                 current += 1
