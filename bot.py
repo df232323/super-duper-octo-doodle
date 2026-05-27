@@ -71,6 +71,12 @@ def set_subscription(uid, days=7):
     conn.commit()
     logger.info(f"✅ Subscription set for user {uid} until {end_date}")
 
+def revoke_subscription(uid):
+    """Отозвать подписку у пользователя"""
+    cursor.execute('UPDATE users SET subscription_end = NULL WHERE user_id = ?', (uid,))
+    conn.commit()
+    logger.info(f"❌ Subscription revoked for user {uid}")
+
 def check_subscription(uid):
     if uid in VIP_USERS: 
         return "VIP", -1
@@ -97,7 +103,6 @@ def update_stats(uid, count):
     broadcast_stats[uid]['today'] += count
 
 def get_all_users():
-    """Получить ВСЕХ пользователей кто запускал бота"""
     cursor.execute('SELECT DISTINCT user_id FROM users')
     users = [row[0] for row in cursor.fetchall()]
     logger.info(f"📊 Found {len(users)} total users in database")
@@ -107,9 +112,7 @@ def get_all_users():
 # 🎨 UI КНОПКИ
 # ==========================================
 def main_kb(has_sub, is_vip=False):
-    """Главное меню - доступно ВСЕМ, но функционал ограничен"""
     if not has_sub and not is_vip:
-        # Без подписки: показываем кнопки но они будут блокироваться
         return [
             [Button.url("✍️ Написать админу", ADMIN_LINK)],
             [Button.inline("👤 Мой профиль", b'profile')],
@@ -117,7 +120,6 @@ def main_kb(has_sub, is_vip=False):
             [Button.inline("📎 Материал", b'material_disabled'), Button.inline("📊 Статистика", b'stats_disabled')]
         ]
     else:
-        # С подпиской: полный доступ
         return [
             [Button.inline("🚀 Запуск рассылки", b'broadcast')],
             [Button.inline("📎 Материал", b'material'), Button.inline("👤 Профиль", b'profile')],
@@ -127,6 +129,7 @@ def main_kb(has_sub, is_vip=False):
 def admin_kb():
     return [
         [Button.inline("👤 Выдать доступ", b'admin_grant')],
+        [Button.inline("👤 Забрать доступ", b'admin_revoke')],
         [Button.inline("📢 Рассылка", b'admin_broadcast')],
         [Button.inline("🔙 Назад", b'main')]
     ]
@@ -214,17 +217,27 @@ async def main():
     async def handler(e):
         uid, txt, step = e.sender_id, e.text, current_step.get(e.sender_id, 'menu')
         
-        # Игнорируем бота и команды
         if e.sender_id == (await bot.get_me()).id or (txt and txt.startswith('/')): 
             return
         
         has_sub, _ = check_subscription(uid)
         is_vip = uid in VIP_USERS
 
+        # 🔐 ПРОВЕРКА ПОДПИСКИ - БЛОКИРОВКА ВСЕГО ФУНКЦИОНАЛА
+        if not has_sub and not is_vip and uid != ADMIN_ID:
+            await e.respond(
+                "**🔐 ДОСТУП ЗАБЛОКИРОВАН**\n\n"
+                "У вас нет активной подписки.\n"
+                "Для получения доступа свяжитесь с админом.",
+                buttons=[[Button.url("✍️ Написать админу", ADMIN_LINK)]]
+            )
+            return
+
         # ОБРАБОТКА АДМИН КОМАНД
         if uid == ADMIN_ID:
             admin_s = admin_step.get(uid)
             
+            # ВЫДАЧА ДОСТУПА
             if admin_s == 'grant_wait_username':
                 username = txt.strip().lstrip('@')
                 admin_step[uid] = 'grant_wait_days'
@@ -264,6 +277,68 @@ async def main():
                     await e.respond("❌ **Неверное число**\n\nВведите количество дней:")
                     return
             
+            # ЗАБРАТЬ ДОСТУП
+            if admin_s == 'revoke_wait_username':
+                username = txt.strip().lstrip('@')
+                try:
+                    entity = await bot.get_entity(username)
+                    target_uid = entity.id
+                    target_username = entity.username or username
+                    
+                    # Проверяем есть ли подписка
+                    has_sub_check, _ = check_subscription(target_uid)
+                    if not has_sub_check and target_uid not in VIP_USERS:
+                        await e.respond(f"⚠️ **У пользователя нет подписки!**\n\n👤 @{target_username} (`{target_uid}`)")
+                        admin_step[uid] = None
+                        admin_step.pop(f'{uid}_revoke_username', None)
+                        return
+                    
+                    # Запрашиваем подтверждение
+                    admin_step[uid] = 'revoke_confirm'
+                    admin_step[f'{uid}_revoke_uid'] = target_uid
+                    admin_step[f'{uid}_revoke_username'] = target_username
+                    
+                    await e.respond(
+                        f"**⚠️ ПОДТВЕРДИТЕ ОТЗЫВ ПОДПИСКИ**\n\n"
+                        f"👤 Пользователь: **@{target_username}** (`{target_uid}`)\n\n"
+                        f"Напишите **да** для подтверждения\n"
+                        f"или **нет** для отмены",
+                        buttons=[[Button.inline("❌ Отмена", b'main')]]
+                    )
+                    return
+                    
+                except Exception as entity_err:
+                    await e.respond(f"❌ **Пользователь не найден!**\n\nОшибка: {str(entity_err)[:100]}")
+                    admin_step[uid] = None
+                    admin_step.pop(f'{uid}_revoke_username', None)
+                    return
+            
+            if admin_s == 'revoke_confirm':
+                if txt.lower() in ['да', 'yes', 'y']:
+                    target_uid = admin_step.get(f'{uid}_revoke_uid')
+                    target_username = admin_step.get(f'{uid}_revoke_username')
+                    
+                    if target_uid:
+                        revoke_subscription(target_uid)
+                        
+                        await e.respond(f"✅ **Подписка отозвана!**\n\n👤 Пользователь: **@{target_username}** (`{target_uid}`)\n\nДоступ к боту заблокирован.")
+                        
+                        try:
+                            await bot.send_message(target_uid, f"**❌ ВАША ПОДПИСКА ОТОЗВАНА!**\n\nДоступ к боту заблокирован.\n\n👤 Админ: @{ADMIN_USERNAME}")
+                        except: pass
+                    
+                    admin_step[uid] = None
+                    admin_step.pop(f'{uid}_revoke_uid', None)
+                    admin_step.pop(f'{uid}_revoke_username', None)
+                    return
+                else:
+                    await e.respond("❌ **Отменено**")
+                    admin_step[uid] = None
+                    admin_step.pop(f'{uid}_revoke_uid', None)
+                    admin_step.pop(f'{uid}_revoke_username', None)
+                    return
+            
+            # РАССЫЛКА
             if admin_s == 'broadcast_wait_text':
                 admin_step[uid] = 'broadcast_wait_photo'
                 admin_step[f'{uid}_text'] = txt
@@ -273,7 +348,6 @@ async def main():
             # Обработка фото для рассылки
             if admin_s == 'broadcast_wait_photo' and e.file:
                 try:
-                    # Сохраняем фото
                     photo_path = await e.download_media(file=f"materials/admin_broadcast_photo.jpg")
                     admin_step[f'{uid}_photo'] = photo_path
                     await e.respond("**✅ Фото сохранено!**\n\nНажмите /send_broadcast для отправки")
@@ -282,14 +356,7 @@ async def main():
                     await e.respond(f"❌ Ошибка сохранения фото: {err}")
                     return
 
-        # Проверка подписки для обычных пользователей
-        if not has_sub and not is_vip and uid != ADMIN_ID:
-            # Показываем предупреждение но не блокируем полностью
-            if step in ['upload_mat', 'sess_file']:
-                await e.respond("🔐 **Требуется подписка**\n\nНажмите /start", 
-                              buttons=[[Button.url("✍️ Написать админу", ADMIN_LINK)]])
-                return
-
+        # ЗАГРУЗКА СЕССИИ
         if step == 'sess_file':
             if e.file and e.file.name.endswith('.session'):
                 msg = await e.respond("⏳ **Загрузка сессии...**")
@@ -329,6 +396,7 @@ async def main():
                     await msg.edit(f"❌ **Ошибка:** {str(err)[:200]}")
             return
 
+        # ЗАГРУЗКА МАТЕРИАЛА
         if step == 'upload_mat':
             if e.file or txt:
                 current_materials.pop(uid, None)
@@ -351,7 +419,6 @@ async def main():
         
         admin_s = admin_step.get(e.sender_id)
         if admin_s == 'broadcast_wait_photo':
-            # Очищаем фото если было
             admin_step.pop(f'{e.sender_id}_photo', None)
             await do_admin_broadcast(e, e.sender_id)
 
@@ -386,7 +453,6 @@ async def main():
                 logger.error(f"Failed to send to {user_id}: {send_err}")
             await asyncio.sleep(0.1)
         
-        # Очистка
         if photo_path and os.path.exists(photo_path):
             os.remove(photo_path)
         
@@ -415,6 +481,11 @@ async def main():
             if uid != ADMIN_ID: return
             admin_step[uid] = 'grant_wait_username'
             await e.respond("**👤 Введите username пользователя:**\n\nПример: `@username` или `username`")
+
+        elif d == 'admin_revoke':
+            if uid != ADMIN_ID: return
+            admin_step[uid] = 'revoke_wait_username'
+            await e.respond("**👤 Введите username пользователя:**\n\nУ кого забрать доступ:\n`@username`")
 
         elif d == 'admin_broadcast':
             if uid != ADMIN_ID: return
